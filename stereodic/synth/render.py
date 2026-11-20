@@ -63,10 +63,10 @@ class Affine:
 # ------------------------------------------------------------------------- kernel
 @njit(parallel=True, cache=True)
 def _render_kernel(
-    height, width, os, cx, cy, ixx, ixy, iyy, amp, qmax,
+    height, width, nodes, weights, cx, cy, ixx, ixy, iyy, amp, qmax,
     gx0, gy0, cell, ncx, ncy, cell_start, cell_items, out,
 ):  # pragma: no cover - compiled
-    inv_os = 1.0 / os
+    os = nodes.shape[0]
     n_sub = os * os
     for r in prange(height):
         s = np.empty(n_sub)
@@ -93,16 +93,19 @@ def _render_kernel(
                         axy = ixy[b]
                         ayy = iyy[b]
                         for sy in range(os):
-                            dy = r - 0.5 + (sy + 0.5) * inv_os - by
+                            dy = r + nodes[sy] - by
                             for sx in range(os):
-                                dx = c - 0.5 + (sx + 0.5) * inv_os - bx
+                                dx = c + nodes[sx] - bx
                                 q = axx * dx * dx + 2.0 * axy * dx * dy + ayy * dy * dy
                                 if q < qmax:
                                     s[sy * os + sx] += a * np.exp(-0.5 * q)
             acc = 0.0
-            for k in range(n_sub):
-                acc += np.exp(-s[k])
-            out[r, c] = acc / n_sub
+            for sy in range(os):
+                row = 0.0
+                for sx in range(os):
+                    row += weights[sx] * np.exp(-s[sy * os + sx])
+                acc += weights[sy] * row
+            out[r, c] = acc
 
 
 def render_transmission(
@@ -113,7 +116,10 @@ def render_transmission(
 ) -> np.ndarray:
     """Pixel-integrated transmission t in (0, 1] of the (deformed) texture, shape (H, W).
 
-    Pixel (r, c) integrates over [c-0.5, c+0.5] x [r-0.5, r+0.5] with oversample^2 samples.
+    Pixel (r, c) is the mean of t over [c-0.5, c+0.5] x [r-0.5, r+0.5], computed with an
+    oversample x oversample Gauss–Legendre rule (oversample=1 is point sampling at the
+    pixel centre). The integrand is smooth, so the rule converges much faster than
+    midpoint supersampling; see tests/unit/test_synth.py for the convergence check.
     """
     if oversample < 1:
         raise ValueError("oversample must be >= 1")
@@ -142,9 +148,11 @@ def render_transmission(
     counts = np.bincount(cell_id, minlength=ncx * ncy)
     cell_start = np.concatenate([[0], np.cumsum(counts)]).astype(np.int64)
 
+    nodes, weights = np.polynomial.legendre.leggauss(int(oversample))
+    nodes, weights = nodes / 2.0, weights / 2.0  # [-1, 1] -> [-0.5, 0.5], weights sum to 1
     out = np.empty((height, width), dtype=np.float64)
     _render_kernel(
-        height, width, int(oversample),
+        height, width, nodes, weights,
         np.ascontiguousarray(centers[:, 0]), np.ascontiguousarray(centers[:, 1]),
         np.ascontiguousarray(inv[:, 0, 0]), np.ascontiguousarray(inv[:, 0, 1]), np.ascontiguousarray(inv[:, 1, 1]),
         np.ascontiguousarray(texture.amplitudes), _Q_MAX,

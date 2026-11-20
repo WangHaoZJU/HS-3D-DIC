@@ -410,7 +410,7 @@ $$
 
 ### 7.2 插值
 
-- 默认使用**三次 B 样条**；五次 B 样条作为配置开关（SciPy 中只需改阶数）。双线性只用于测试对照。
+- 默认使用**五次 B 样条**，三次作为配置开关。依据是 B01：D=4 px 散斑、无噪声时，最大偏差五次为 0.00045 px、三次为 0.0018 px；吞吐五次约为三次的 0.7 倍。双线性只用于测试对照。
 - 每帧预计算一次样条系数：
 
 ```python
@@ -420,7 +420,7 @@ vals = map_coordinates(coeff, [y, x], order=3, mode="mirror", prefilter=False)
 ```
 
 - 统一接口：`prepare(image)`、`evaluate(x, y)`、`gradient(x, y)`。梯度由样条基函数的解析导数计算，单元测试与数值差分对照。
-- 边界镜像只是为了数值稳定，子区真正越界时仍然报 `OUT_OF_BOUNDS`。
+- **边界安全带**：镜像边界条件并不是真实场景的延续，靠近图像边缘几个像素内的插值明显不准。合成数据实测：三次样条约 4 px、五次约 7 px 以内误差偏大。因此可靠域取 $[b, W-1-b]\times[b, H-1-b]$，其中 $b$ = 5（三次）/ 8（五次）（`interp.BORDER`）；子区一旦进入安全带就报 `OUT_OF_BOUNDS`。实际试验中 ROI 一般远离图像边缘，这条规则主要防止错误的边缘测点混入。
 - **参考子区也通过插值采样**，即使中心落在整数像素上。这样左目（整数网格）和右目（立体匹配得到的非整数中心）走同一条代码路径，不会因四舍五入造成物质点错位。
 
 ### 7.3 形函数
@@ -699,7 +699,7 @@ poi:
   subset_size: 31
   step: 5
 interpolation:
-  order: 3               # 3 | 5
+  order: 5               # 3 | 5
 solver:
   max_iterations: 50
   convergence_threshold_px: 0.001
@@ -757,7 +757,11 @@ CINE/MRAW 等相机原生格式的读取器在确定相机型号后再写，需�
 
 ### 14.1 合成数据
 
-合成器（`synth/`）用连续散斑纹理和过采样像素积分生成图像，加入噪声和量化，**不使用 DIC 求解器中的 B 样条插值**来生成图像，以免“用同一个模型自证”。
+合成器（`synth/`）用解析高斯斑点纹理生成图像，再加入噪声和量化，**不使用 DIC 求解器中的 B 样条插值**，以免“用同一个模型自证”。
+
+- 像素积分采用 Gauss–Legendre 求积，而不是中点过采样。被积函数光滑，所以收敛是谱收敛的：6×6 个点时误差约 2e-8，8×8 时约 6e-11（相对于满量程）；中点规则在同样点数下误差约 5e-3，会带来约 0.01 px 的假误差。
+- 变形通过移动斑点中心并变换协方差（$\Sigma\to J\Sigma J^T$）实现：仿射变形是精确的，一般变形是二阶近似。渲染严格满足平移等变性（整数平移的结果与平移前一致到 1e-12）。
+- 小散斑（D≈4 px）加上饱和的透射率模型会产生混叠，B 样条无法完全重建。这和真实相机的情况一致，所以 B01 同时报告 D=4 和 D=6 的结果。
 
 | 编号 | 内容 | 用途 |
 | --- | --- | --- |
@@ -788,24 +792,38 @@ CINE/MRAW 等相机原生格式的读取器在确定相机型号后再写，需�
 
 #### M0：工程骨架
 
-- [ ] Git 仓库、远端、`.gitignore`、`pyproject.toml` + `uv.lock`
-- [ ] `core`：配置模型、类型、状态码
-- [ ] `io`：TIFF 序列读取、HDF5 存储骨架
-- [ ] `synth/speckle.py` + `render.py`（S1）
-- [ ] pytest 框架，包括 `cuda` 标记
+- [x] Git 仓库、远端、`.gitignore`、`pyproject.toml` + `uv.lock`
+- [x] `core`：配置模型、类型、状态码
+- [x] `io`：TIFF 序列读取、HDF5 存储骨架
+- [x] `synth/speckle.py` + `render.py`（S1）
+- [x] pytest 框架，包括 `cuda` 标记
+- [ ] Linux 端 `uv sync --extra cuda` 与 GPU 测试
 
 **出口：** Mac 和 Linux 上 `uv sync && uv run pytest` 都通过；Linux 上 CuPy 能识别 A6000。
 
 #### M1：二维 DIC 核心（CPU）
 
-- [ ] `interp.py`：三次 / 五次 B 样条，梯度与数值差分一致
-- [ ] `shape_functions.py`：0 / 1 阶，组合与求逆的单元测试
-- [ ] `icgn.py`：NumPy FP64 参考实现
-- [ ] `backends/numba_cpu.py` 与参考实现一致
-- [ ] `init_guess.py`：FFT-CC
-- [ ] B01、B03
+- [x] `interp.py`：三次 / 五次 B 样条，梯度与数值差分一致
+- [x] `shape_functions.py`：0 / 1 阶，组合与求逆的单元测试
+- [x] `icgn.py`：NumPy FP64 参考实现
+- [x] `backends/numba_cpu.py` 与参考实现一致
+- [x] `init_guess.py`：ZNCC 模板搜索（OpenCV `matchTemplate`）+ 相位相关
+- [x] B01、B03
 
 **出口：** S1 理想合成平移的 RMSE ≤ 0.005 px，并画出偏差曲线；Numba 与 NumPy 的差异 < 1e-8 px。
+
+**M1 结果（Mac，8 核，2026-11-20）：**
+
+| 条件（子区 31，一阶） | 插值 | 最大偏差 | RMSE |
+| --- | --- | ---: | ---: |
+| D=4 px，无噪声 | 三次 | 0.0018 px | 0.0013 px |
+| D=4 px，无噪声 | 五次 | 0.00045 px | 0.00043 px |
+| D=6 px，无噪声 | 五次 | 0.00007 px | 0.00009 px |
+| D=4 px，噪声 10 GL（12 位） | 五次 | 0.00053 px | 0.0012 px |
+
+- 出口条件满足：理想条件下 RMSE 远低于 0.005 px；Numba 与 NumPy 的差异 < 1e-8 px（`tests/backends/test_icgn_consistency.py`）。
+- B03（D=4，噪声 10 GL）：子区从 21 增大到 51，RMSE 从 0.0023 降到 0.0013 px（三次）；子区 31 时五次为 0.0011 px。
+- 吞吐（Numba，五次，子区 31）：约 2.2 万次求解/秒。按 2 万 POI × 1 万帧 × 2 台相机估算，Mac CPU 需约 5 小时，因此 M3 的 CUDA 后端是必要的。
 
 #### M2：标定与静态双目
 

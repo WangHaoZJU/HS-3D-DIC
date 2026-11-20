@@ -10,9 +10,9 @@ Python package: `stereodic`. Technical design: [docs/StereoDIC_Technical_Design.
 
 | Milestone | Scope | State |
 | --- | --- | --- |
-| M0 | Repo skeleton, config, types, TIFF reader, HDF5 store, synthetic speckle | done |
-| M1 | 2D DIC core (B-spline, IC-GN, Numba) | next |
-| M2 | Calibration + static stereo | — |
+| M0 | Repo skeleton, config, types, TIFF reader, HDF5 store, synthetic speckle | done (Linux GPU check pending) |
+| M1 | 2D DIC core (B-spline, IC-GN, Numba), benchmarks B01/B03 | done |
+| M2 | Calibration + static stereo | next |
 | M3 | Temporal DIC, CUDA backend, frequencies | — |
 | M4 | Harmonic fit, ODS, FDD, mode shapes | — |
 
@@ -72,6 +72,15 @@ uv run pytest -m slow      # slow tests only
 uv run pytest -m cuda      # GPU tests (Linux)
 ```
 
+## Benchmarks
+
+```bash
+uv run python -m benchmarks.b01_subpixel_bias [--quick] [--diameter 4]   # sub-pixel bias curve
+uv run python -m benchmarks.b03_subset_size [--quick] [--interp 5]       # error vs subset size, throughput
+```
+
+Results (CSV/PNG) go to `results/benchmarks/` (git-ignored).
+
 ## Configuration
 
 - `configs/defaults/dic.yaml` — default DIC parameters.
@@ -85,7 +94,8 @@ stereodic/
   core/        types, config, status codes, provenance
   io/          image sequences (TIFF), HDF5 result store
   synth/       independent synthetic speckle renderer (ground truth)
-  dic/         DIC core and compute backends (M1+)
+  dic/         B-spline interpolation, shape functions, IC-GN, initial guesses, backends
+benchmarks/    synthetic accuracy and throughput benchmarks
 scripts/       command-line entry points
 tests/         unit / integration / backends (cuda)
 docs/          technical design

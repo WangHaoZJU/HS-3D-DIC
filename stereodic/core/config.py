@@ -39,12 +39,14 @@ class PoiConfig(_Strict):
 
 
 class InterpolationConfig(_Strict):
-    order: Literal[3, 5] = 3
+    order: Literal[3, 5] = 5  # B01: quintic bias ~4x lower than cubic, ~0.7x throughput
 
 
 class SolverConfig(_Strict):
     max_iterations: int = Field(50, ge=1, le=255)  # stored as uint8
     convergence_threshold_px: float = Field(1e-3, gt=0)
+    min_gray_std: float = Field(1.0, ge=0)  # LOW_TEXTURE below this subset std (gray levels)
+    max_condition: float = Field(1e10, gt=1)  # ILL_CONDITIONED above this scaled Hessian condition
 
 
 class StereoConfig(_Strict):

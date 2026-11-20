@@ -5,10 +5,12 @@ poi:
   subset_size: 31        # px, odd
   step: 5                # px
 interpolation:
-  order: 3               # B-spline order: 3 | 5
+  order: 5               # B-spline order: 3 | 5 (B01: quintic bias ~4x lower)
 solver:
   max_iterations: 50
   convergence_threshold_px: 0.001
+  min_gray_std: 1.0      # gray levels; subsets with lower std are LOW_TEXTURE
+  max_condition: 1.0e+10 # scaled reference Hessian condition limit
 stereo:
   shape_order: 2         # set to 1 until second-order IC-GN passes S1/S4
   initialization: sift_affine   # sift_affine | epipolar_zncc

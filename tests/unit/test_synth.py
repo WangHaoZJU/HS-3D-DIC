@@ -51,7 +51,7 @@ def test_oversampling_converges(texture):
     err8 = np.abs(render_transmission(texture, (48, 48), Translation(0.37, 0.61), oversample=8) - ref).max()
     err2 = np.abs(render_transmission(texture, (48, 48), Translation(0.37, 0.61), oversample=2) - ref).max()
     assert err8 < err2
-    assert err8 < 5e-3
+    assert err8 < 1e-8  # Gauss–Legendre pixel integration converges spectrally
 
 
 def test_sensor_quantization_and_noise(texture):
