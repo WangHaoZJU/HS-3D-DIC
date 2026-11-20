@@ -1,0 +1,29 @@
+# Example experiment configuration. One file per test run, tracked in git.
+name: example
+description: Template experiment; copy and edit.
+
+cameras:
+  left:
+    path: example/left        # relative to data_root
+    pattern: "*.tif"
+  right:
+    path: example/right
+    pattern: "*.tif"
+  frame_rate_hz: 10000.0
+
+# Optional crop in full-sensor pixel coordinates: [x0, y0, width, height]
+roi: null
+
+frames:
+  start: 0
+  stop: null                  # exclusive; null = to the end
+  step: 1
+reference_frame: 0
+
+calibration_file: example/calibration.h5   # relative to data_root
+output_file: example.h5                    # relative to results_root
+
+# Any key from configs/defaults/dic.yaml can be overridden here, e.g.:
+dic:
+  poi:
+    subset_size: 31

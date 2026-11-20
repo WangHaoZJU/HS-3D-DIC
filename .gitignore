@@ -1,0 +1,27 @@
+# Python / tooling
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ipynb_checkpoints/
+*.egg-info/
+build/
+dist/
+
+# OS
+.DS_Store
+
+# Machine-specific config (template: configs/local.yaml.example)
+configs/local.yaml
+
+# Data and results never go into git
+data/
+results/
+*.h5
+*.hdf5
+*.cine
+*.mraw
+*.tif
+*.tiff
+!tests/data/**/*.tif
+!tests/data/**/*.tiff

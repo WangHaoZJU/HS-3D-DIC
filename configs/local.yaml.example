@@ -1,0 +1,10 @@
+# Copy to configs/local.yaml (git-ignored) and edit per machine.
+# Relative paths in experiment files are resolved against these roots.
+
+# Mac example
+data_root: /Users/<you>/Data/hs3ddic
+results_root: /Users/<you>/Data/hs3ddic/results
+
+# Linux example
+# data_root: /data/hs3ddic
+# results_root: /data/hs3ddic/results

@@ -1,0 +1,23 @@
+# Default DIC parameters (tracked in git). Experiment files override any key.
+# Values are initial settings, to be tuned by benchmarks B01/B03.
+backend: auto            # auto | numpy | numba | cuda
+poi:
+  subset_size: 31        # px, odd
+  step: 5                # px
+interpolation:
+  order: 3               # B-spline order: 3 | 5
+solver:
+  max_iterations: 50
+  convergence_threshold_px: 0.001
+stereo:
+  shape_order: 2         # set to 1 until second-order IC-GN passes S1/S4
+  initialization: sift_affine   # sift_affine | epipolar_zncc
+  reliability_guided: true
+temporal:
+  shape_order: 1
+  initialization: previous_solution
+  frame_batch: 64
+quality:
+  fb_stride: 50          # forward-backward spot check every N frames (0 = off)
+storage:
+  save_params: false
