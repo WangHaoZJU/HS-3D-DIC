@@ -12,6 +12,7 @@ from pathlib import Path
 import numpy as np
 
 from .core.config import ExperimentConfig, config_hash
+from .dic import shape_functions as sf
 
 log = logging.getLogger(__name__)
 
@@ -182,4 +183,271 @@ def run_stereo(cfg: ExperimentConfig, force: bool = False) -> Path:
         store.write_array(g + "stereo_params", sm.result.params, shape_order=cfg.dic.stereo.shape_order)
         store.write_array(g + "reprojection_error", shape.reprojection_error.astype(np.float32), units="px")
         store.mark_stage_done("stereo", stage_hash)
+    return out
+
+
+# ---------------------------------------------------------------------- temporal
+def _selected_frame_indices(cfg: ExperimentConfig, n_left: int, n_right: int) -> np.ndarray:
+    from .io.sequence import frame_indices
+
+    if n_left != n_right:
+        raise ValueError(f"left/right sequence lengths differ: {n_left} / {n_right}")
+    selected = list(frame_indices(n_left, cfg.frames.start, cfg.frames.stop, cfg.frames.step))
+    if cfg.reference_frame >= n_left:
+        raise ValueError(f"reference_frame {cfg.reference_frame} out of range ({n_left} frames)")
+    if cfg.reference_frame not in selected:
+        selected.append(cfg.reference_frame)
+        selected.sort()
+    return np.asarray(selected, dtype=np.int64)
+
+
+def _temporal_stage_hash(cfg: ExperimentConfig, frame_indices: np.ndarray, calibration_path: Path) -> str:
+    return config_hash(
+        {
+            "dic_temporal": cfg.dic.temporal.model_dump(mode="json"),
+            "solver": cfg.dic.solver.model_dump(mode="json"),
+            "interpolation": cfg.dic.interpolation.model_dump(mode="json"),
+            "frames": frame_indices.tolist(),
+            "reference_frame": cfg.reference_frame,
+            "calibration_sha256": _file_sha256(calibration_path),
+        }
+    )
+
+
+def _ensure_temporal_datasets(store, n_frames: int, n_points: int, n_params: int, shape_order: int, save_params: bool) -> None:
+    for side in ("left", "right"):
+        prefix = f"dic/{side}/"
+        if f"{prefix}xy" not in store.h5:
+            ds = store.create_timeseries(f"{prefix}xy", n_frames, n_points, 2)
+            ds.attrs["shape_order"] = shape_order
+        if f"{prefix}znssd" not in store.h5:
+            store.create_timeseries(f"{prefix}znssd", n_frames, n_points, dtype=np.float32)
+        if f"{prefix}iterations" not in store.h5:
+            store.create_timeseries(f"{prefix}iterations", n_frames, n_points, dtype=np.uint8, fill_value=0)
+        if f"{prefix}status" not in store.h5:
+            store.create_timeseries(f"{prefix}status", n_frames, n_points, dtype=np.uint8, fill_value=0)
+        if save_params and f"{prefix}params" not in store.h5:
+            ds = store.create_timeseries(f"{prefix}params", n_frames, n_points, n_params)
+            ds.attrs["shape_order"] = shape_order
+    if "progress/dic_frames_done" not in store.h5:
+        store.h5.create_dataset(
+            "progress/dic_frames_done",
+            shape=(n_frames, 2),
+            dtype=np.bool_,
+            chunks=(min(64, n_frames), 2),
+            fillvalue=False,
+        )
+
+
+def _previous_params(store, side: str, row: int, centers: np.ndarray, n_params: int) -> np.ndarray:
+    """Recover a previous-frame initial guess after a resumed run."""
+    if row < 0:
+        return np.zeros((len(centers), n_params), dtype=np.float64)
+    path = f"dic/{side}/params"
+    if path in store.h5:
+        values = store.h5[path][row]
+        return np.nan_to_num(values, nan=0.0)
+    xy = store.h5[f"dic/{side}/xy"][row]
+    delta = np.nan_to_num(xy - centers, nan=0.0)
+    return sf.from_displacement(delta, int(store.h5[f"dic/{side}/xy"].attrs.get("shape_order", 1)))
+
+
+def run_temporal(cfg: ExperimentConfig, force: bool = False) -> Path:
+    """Run fixed-reference DIC for both cameras with frame-level checkpoints."""
+    from .core.types import ROI
+    from .dic import shape_functions as sf
+    from .dic.temporal import TemporalMatchOptions, TemporalTracker
+    from .io.sequence import open_sequence
+    from .io.sync import pair_timestamps, sequence_timestamps
+    from .calibration.report import load_calibration
+    from .io.storage import ResultStore
+
+    if cfg.output_file is None or cfg.calibration_file is None:
+        raise ValueError("experiment config needs output_file and calibration_file")
+    out = cfg.results_path(cfg.output_file)
+    if not out.exists():
+        raise FileNotFoundError(f"stereo output does not exist: {out}; run --stage stereo first")
+
+    seq_l = open_sequence(cfg.data_path(cfg.cameras.left.path), cfg.cameras.left.pattern)
+    seq_r = open_sequence(cfg.data_path(cfg.cameras.right.path), cfg.cameras.right.pattern)
+    frame_ids = _selected_frame_indices(cfg, len(seq_l), len(seq_r))
+    stage_hash = _temporal_stage_hash(cfg, frame_ids, cfg.data_path(cfg.calibration_file))
+    options = TemporalMatchOptions.from_config(cfg.dic)
+    n_params = sf.n_params(options.icgn.shape_order)
+    backend = cfg.dic.backend
+
+    with ResultStore.open(out, "r+") as store:
+        if not force and store.stage_done("temporal", stage_hash):
+            return out
+        centers_l = store.read_array("reference/points_left_image")
+        centers_r = store.read_array("reference/points_right_image")
+        if centers_l.shape != centers_r.shape:
+            raise ValueError("left/right reference point arrays have different shapes")
+        n_points = centers_l.shape[0]
+        _ensure_temporal_datasets(
+            store, len(frame_ids), n_points, n_params, options.icgn.shape_order, cfg.dic.storage.save_params
+        )
+        store.write_array("time/frame_ids", np.column_stack([frame_ids, frame_ids]))
+
+        ts_l = sequence_timestamps(
+            len(seq_l), cfg.cameras.frame_rate_hz,
+            cfg.data_path(cfg.cameras.left.timestamp_path) if cfg.cameras.left.timestamp_path else None,
+        )
+        ts_r = sequence_timestamps(
+            len(seq_r), cfg.cameras.frame_rate_hz,
+            cfg.data_path(cfg.cameras.right.timestamp_path) if cfg.cameras.right.timestamp_path else None,
+        )
+        sync = pair_timestamps(ts_l, ts_r)
+        if not (
+            np.array_equal(sync.left_indices, np.arange(len(seq_l)))
+            and np.array_equal(sync.right_indices, np.arange(len(seq_r)))
+        ):
+            raise ValueError("left/right timestamp pairing is incomplete; inspect with scripts/check_sync.py")
+        store.write_array("time/timestamps_left", ts_l[frame_ids], units="s")
+        store.write_array("time/timestamps_right", ts_r[frame_ids], units="s")
+        store.write_array("time/timestamps", 0.5 * (ts_l[frame_ids] + ts_r[frame_ids]), units="s")
+        store.write_array("time/sync_delta", sync.delta_seconds[frame_ids], units="s")
+
+        done = store.h5["progress/dic_frames_done"]
+        if force:
+            done[...] = False
+            store.invalidate_stage("temporal")
+
+        ref_index = int(cfg.reference_frame)
+        ref_l = seq_l.read(ref_index, ROI.from_list(None))
+        ref_r = seq_r.read(ref_index, ROI.from_list(None))
+        tracker_l = TemporalTracker(ref_l, centers_l, options, backend)
+        tracker_r = TemporalTracker(ref_r, centers_r, options, backend)
+        previous_row = -1
+        previous_xy_l = None
+        previous_xy_r = None
+        previous_params_l = np.zeros((n_points, n_params), dtype=np.float64)
+        previous_params_r = np.zeros((n_points, n_params), dtype=np.float64)
+
+        for row, frame_id in enumerate(frame_ids.tolist()):
+            if bool(done[row, 0]) and bool(done[row, 1]):
+                previous_row = row
+                previous_xy_l = store.h5["dic/left/xy"][row]
+                previous_xy_r = store.h5["dic/right/xy"][row]
+                previous_params_l = _previous_params(store, "left", row, centers_l, n_params)
+                previous_params_r = _previous_params(store, "right", row, centers_r, n_params)
+                continue
+
+            image_l = seq_l.read(frame_id)
+            image_r = seq_r.read(frame_id)
+            if frame_id == ref_index:
+                result_l = tracker_l.reference_result(frame_id)
+                result_r = tracker_r.reference_result(frame_id)
+            else:
+                p0_l = previous_params_l if options.initialization == "previous_solution" else None
+                p0_r = previous_params_r if options.initialization == "previous_solution" else None
+                result_l = tracker_l.solve_frame(image_l, p0_l)
+                result_r = tracker_r.solve_frame(image_r, p0_r)
+                tracker_l.check_jump(result_l, previous_xy_l)
+                tracker_r.check_jump(result_r, previous_xy_r)
+
+            for side, result in (("left", result_l), ("right", result_r)):
+                store.h5[f"dic/{side}/xy"][row] = result.xy
+                store.h5[f"dic/{side}/znssd"][row] = result.znssd
+                store.h5[f"dic/{side}/iterations"][row] = result.iterations
+                store.h5[f"dic/{side}/status"][row] = result.status
+                if cfg.dic.storage.save_params:
+                    store.h5[f"dic/{side}/params"][row] = result.params
+            store.h5["progress/dic_frames_done"][row] = [True, True]
+            store.flush()
+            previous_row = row
+            previous_xy_l = result_l.xy.copy()
+            previous_xy_r = result_r.xy.copy()
+            previous_params_l = result_l.params.copy()
+            previous_params_r = result_r.params.copy()
+
+        if bool(np.all(done[...])):
+            store.mark_stage_done("temporal", stage_hash)
+    return out
+
+
+# ------------------------------------------------------------------- reconstruct
+def run_reconstruct(cfg: ExperimentConfig, force: bool = False) -> Path:
+    """Triangulate every valid temporal correspondence and write 3D displacement."""
+    from .calibration.report import load_calibration
+    from .core.status import Status
+    from .io.storage import ResultStore
+    from .recon.frames import to_local
+    from .recon.triangulate import triangulate
+
+    if cfg.output_file is None or cfg.calibration_file is None:
+        raise ValueError("experiment config needs output_file and calibration_file")
+    out = cfg.results_path(cfg.output_file)
+    calib = load_calibration(cfg.data_path(cfg.calibration_file))
+    with ResultStore.open(out, "r+") as store:
+        if "dic/left/xy" not in store.h5 or "dic/right/xy" not in store.h5:
+            raise ValueError("temporal DIC datasets are missing; run --stage temporal first")
+        xy_l = store.h5["dic/left/xy"]
+        xy_r = store.h5["dic/right/xy"]
+        T, N, _ = xy_l.shape
+        stage_hash = config_hash(
+            {
+                "stereo": cfg.dic.stereo.model_dump(mode="json"),
+                "calibration_sha256": _file_sha256(cfg.data_path(cfg.calibration_file)),
+                "temporal_shape": list(xy_l.shape),
+            }
+        )
+        if not force and store.stage_done("reconstruct", stage_hash):
+            return out
+        for name, components, dtype in (
+            ("reconstruction/xyz", 3, np.float64),
+            ("reconstruction/displacement_raw", 3, np.float64),
+            ("reconstruction/displacement_local", 3, np.float64),
+            ("reconstruction/reprojection_error", None, np.float32),
+            ("reconstruction/status", None, np.uint8),
+            ("quality/valid_mask", None, np.bool_),
+        ):
+            if name not in store.h5:
+                store.create_timeseries(name, T, N, components, dtype=dtype, fill_value=False if dtype is np.bool_ else None)
+
+        X0 = store.read_array("reference/points_3d")
+        frames = store.read_array("reference/local_frames")
+        done = store.h5.require_group("progress").get("reconstruction_done")
+        if done is None:
+            done = store.h5.create_dataset("progress/reconstruction_done", shape=(T,), dtype=np.bool_, fillvalue=False)
+        if force:
+            done[...] = False
+            store.invalidate_stage("reconstruct")
+
+        for k in range(T):
+            if bool(done[k]):
+                continue
+            left = xy_l[k]
+            right = xy_r[k]
+            dic_ok = np.all(np.isfinite(left), axis=1) & np.all(np.isfinite(right), axis=1)
+            tri = triangulate(
+                calib,
+                np.where(dic_ok[:, None], left, np.nan),
+                np.where(dic_ok[:, None], right, np.nan),
+                max_reprojection_px=cfg.dic.stereo.max_reprojection_px,
+            )
+            status_l = store.h5["dic/left/status"][k]
+            status_r = store.h5["dic/right/status"][k]
+            status = np.full(N, Status.NOT_COMPUTED, dtype=np.uint8)
+            both_ok = (status_l == Status.OK) & (status_r == Status.OK)
+            status[both_ok] = tri.status[both_ok]
+            bad_left = ~both_ok & (status_l != Status.OK)
+            status[~bad_left & ~both_ok] = status_r[~bad_left & ~both_ok]
+            valid = status == Status.OK
+            xyz = np.full((N, 3), np.nan, dtype=np.float64)
+            xyz[valid] = tri.X[valid]
+            disp = xyz - X0
+            local = to_local(frames, disp)
+            rep = np.full(N, np.nan, dtype=np.float32)
+            rep[valid] = tri.reprojection_error[valid].astype(np.float32)
+            store.h5["reconstruction/xyz"][k] = xyz
+            store.h5["reconstruction/displacement_raw"][k] = disp
+            store.h5["reconstruction/displacement_local"][k] = local
+            store.h5["reconstruction/reprojection_error"][k] = rep
+            store.h5["reconstruction/status"][k] = status
+            store.h5["quality/valid_mask"][k] = valid
+            done[k] = True
+            store.flush()
+        if bool(np.all(done[...])):
+            store.mark_stage_done("reconstruct", stage_hash)
     return out

@@ -223,8 +223,6 @@ class ICGNSolver:
 
         self.options = options
         self.backend = resolve_backend(backend)
-        if self.backend == "cuda":
-            raise NotImplementedError("CUDA IC-GN backend is scheduled for M3")
 
     def prepare_reference(self, ref: BSplineImage, centers: np.ndarray) -> ReferenceSubsets:
         return prepare_reference(ref, centers, self.options)
@@ -244,6 +242,10 @@ class ICGNSolver:
             p0 = np.zeros((n, sf.n_params(self.options.shape_order)))
         if self.backend == "numpy":
             return solve_reference(refs, target, p0, indices)
+        if self.backend == "cuda":
+            from .backends.cuda import solve_cuda
+
+            return solve_cuda(refs, target, p0, indices)
         from .backends.numba_cpu import solve_numba
 
         return solve_numba(refs, target, p0, indices)

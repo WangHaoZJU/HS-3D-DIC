@@ -13,7 +13,7 @@ Python package: `stereodic`. Technical design: [docs/StereoDIC_Technical_Design.
 | M0 | Repo skeleton, config, types, TIFF reader, HDF5 store, synthetic speckle | done (Linux GPU check pending) |
 | M1 | 2D DIC core (B-spline, IC-GN, Numba), benchmarks B01/B03 | done |
 | M2 | Calibration (ChArUco), 2nd-order IC-GN, stereo matching (SIFT + RG-DIC), triangulation, reference shape, B04 | done (real-data E1/E2 pending) |
-| M3 | Temporal DIC, CUDA backend, frequencies | next |
+| M3 | Fixed-reference temporal DIC, reconstruction, sync, spectra, CUDA path | done (GPU/E3 validation pending) |
 | M4 | Harmonic fit, ODS, FDD, mode shapes | — |
 
 ## Machines and workflow
@@ -80,7 +80,18 @@ uv run python scripts/calibrate.py --config configs/experiments/<name>.yaml -v
 uv run python scripts/run_dic.py --config configs/experiments/<name>.yaml --stage stereo -v
 ```
 
-Temporal DIC, displacement and vibration analysis follow in M3/M4.
+4. Fixed-reference temporal DIC and 3D reconstruction:
+
+```bash
+uv run python scripts/run_dic.py --config configs/experiments/<name>.yaml --stage temporal -v
+uv run python scripts/run_dic.py --config configs/experiments/<name>.yaml --stage reconstruct -v
+```
+
+5. Dominant frequency extraction from local displacement:
+
+```bash
+uv run python scripts/analyze.py --config configs/experiments/<name>.yaml --direction 2
+```
 
 ## Tests
 
@@ -116,7 +127,8 @@ stereodic/
   calibration/ camera model, ChArUco detection, mono/stereo calibration, report
   dic/         B-spline interpolation, shape functions (0/1/2), IC-GN, SIFT/RG-DIC stereo matching, backends
   recon/       triangulation, normals and local frames, reference shape
-  pipeline.py  stage orchestration (calibrate, stereo)
+  pipeline.py  stage orchestration (calibrate, stereo, temporal, reconstruct)
+  vibration/   spectra and dominant-frequency extraction
 benchmarks/    synthetic accuracy and throughput benchmarks
 scripts/       command-line entry points
 tests/         unit / integration / backends (cuda)

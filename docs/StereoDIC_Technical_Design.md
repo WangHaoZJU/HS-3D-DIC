@@ -868,12 +868,20 @@ B04：512×416 px，f = 2500 px（0.1 mm/px，距离约 250 mm），立体夹角
 
 #### M3：动态测量与 GPU（第一次交付频率）
 
-- [ ] 实际相机格式读取、`sync.py`、`check_sync.py`
-- [ ] `temporal.py` + Numba 后端
-- [ ] CUDA 后端（`icgn.cu`、`runner.py`），通过 BK 一致性测试
-- [ ] HDF5 断点续算；`reconstruct` 阶段
-- [ ] `spectrum.py`、峰值识别
+- [x] TIFF 序列读取、时间戳加载、`sync.py`、`check_sync.py`
+- [x] `temporal.py` + Numba 后端，固定参考帧和逐帧初值
+- [x] CUDA 后端接口与 CuPy 求解路径；GPU 一致性测试待 RTX 环境执行
+- [x] HDF5 帧级断点续算；`reconstruct` 阶段；`analyze.py`
+- [x] `spectrum.py`、单边谱和峰值识别
 - [ ] S6；实测 E3、E4（T4）
+
+**M3 当前结果（Linux CPU，2026-11-22）：**
+
+- 固定参考时序 DIC 已通过独立合成平移测试，4 帧、20 个 POI 的最大误差约 `0.00086 px`。
+- 合成双目动态链路 `stereo → temporal → reconstruct` 已通过集成测试，所有有效 POI 均完成匹配和三角化。
+- HDF5 的 `progress/dic_frames_done` 和 `progress/reconstruction_done` 支持逐帧 flush 与恢复。
+- 频谱模块可从等间隔时间轴识别已知正弦频率；不规则时间轴会显式拒绝 FFT/Welch。
+- 当前环境 `auto` 后端为 Numba，CUDA 因缺少 CuPy/GPU 尚未进行硬件一致性验证。
 
 **出口：** 真实叶片各阶频率与加速度计/LDV 的偏差 ≤ max(0.5%, Δf)；CUDA 与 CPU 位移差 P99 < 1e-4 px。
 

@@ -62,6 +62,8 @@ class TemporalConfig(_Strict):
     shape_order: Literal[0, 1, 2] = 1
     initialization: Literal["previous_solution", "zero"] = "previous_solution"
     frame_batch: int = Field(64, ge=1)
+    max_znssd: float = Field(0.4, gt=0, le=4)
+    max_jump_px: float | None = Field(default=None, gt=0)
 
 
 class QualityConfig(_Strict):
@@ -90,6 +92,7 @@ class CameraSource(_Strict):
     # position of the recorded image window on the full sensor used for calibration
     # (cameras often record a cropped window to reach high frame rates)
     sensor_origin: list[int] = Field(default_factory=lambda: [0, 0])
+    timestamp_path: Path | None = None
 
 
 class CamerasConfig(_Strict):
