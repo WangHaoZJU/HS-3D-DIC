@@ -20,7 +20,24 @@ frames:
   step: 1
 reference_frame: 0
 
-calibration_file: example/calibration.h5   # relative to data_root
+calibration_file: example/calibration.h5   # relative to data_root; written by scripts/calibrate.py
+
+# Optional: how to compute calibration_file (scripts/calibrate.py)
+calibration:
+  board:
+    squares_x: 9
+    squares_y: 7
+    square_mm: 5.0
+    marker_mm: 3.75
+    dictionary: DICT_5X5_100
+  left:
+    path: example/calib/left
+    pattern: "*.tif"
+  right:
+    path: example/calib/right
+    pattern: "*.tif"
+  distortion: k1k2p1p2        # k1k2p1p2 | k1k2p1p2k3 | rational
+  refine_stereo_intrinsics: true
 output_file: example.h5                    # relative to results_root
 
 # Any key from configs/defaults/dic.yaml can be overridden here, e.g.:

@@ -18,7 +18,7 @@ interpolation safety band (interp.BORDER) now excludes.
 The reference subset is always sampled through the B-spline model, so POIs with
 non-integer centres (right camera after stereo matching) use the same code path.
 
-Subset masks (partial subsets at blade edges) are planned for M2.
+Subset masks (partial subsets at blade edges) are not implemented yet; POI grids keep\nwhole subsets inside the mask instead (mesh.make_poi_grid).
 """
 
 from __future__ import annotations
@@ -144,20 +144,33 @@ def _znssd(ft: np.ndarray, fn: float, gt: np.ndarray, gn: float) -> float:
     return float(r @ r)
 
 
-def solve_reference(refs: ReferenceSubsets, target: BSplineImage, p0: np.ndarray) -> DICBatchResult:
-    """Plain NumPy IC-GN, one POI at a time (readable baseline, not for production volumes)."""
+def _check_indices(refs: ReferenceSubsets, p0: np.ndarray, indices: np.ndarray | None) -> tuple[np.ndarray, np.ndarray]:
+    n_p = sf.n_params(refs.options.shape_order)
+    idx = np.arange(len(refs), dtype=np.int64) if indices is None else np.asarray(indices, dtype=np.int64).ravel()
+    if idx.size and (idx.min() < 0 or idx.max() >= len(refs)):
+        raise IndexError("POI index out of range")
+    p0 = np.ascontiguousarray(np.asarray(p0, dtype=np.float64).reshape(idx.size, n_p))
+    return idx, p0
+
+
+def solve_reference(
+    refs: ReferenceSubsets, target: BSplineImage, p0: np.ndarray, indices: np.ndarray | None = None
+) -> DICBatchResult:
+    """Plain NumPy IC-GN, one POI at a time (readable baseline, not for production volumes).
+
+    indices: optional subset of POIs to solve; p0 and the result then follow that order.
+    """
     opt = refs.options
     order = opt.shape_order
-    n = len(refs)
-    p0 = np.asarray(p0, dtype=np.float64).reshape(n, -1)
-    out = DICBatchResult.empty(n, n_params=sf.n_params(order))
-    for i in range(n):
+    idx, p0 = _check_indices(refs, p0, indices)
+    out = DICBatchResult.empty(idx.size, n_params=sf.n_params(order))
+    for k, i in enumerate(idx):
         if refs.status[i] != Status.OK:
-            out.status[i] = refs.status[i]
+            out.status[k] = refs.status[i]
             continue
         c = refs.centers[i]
         ft, fn, Ji, Hi = refs.f_tilde[i], refs.f_norm[i], refs.J[i], refs.H_inv[i]
-        p = p0[i].copy()
+        p = p0[k].copy()
         status = Status.NOT_CONVERGED
         it = 0
         gt, gn = None, 0.0
@@ -176,12 +189,16 @@ def solve_reference(refs: ReferenceSubsets, target: BSplineImage, p0: np.ndarray
                 break
             e = ft - (fn / gn) * gt
             dp = -Hi @ (Ji.T @ e)
-            p = sf.compose_inverse(p, dp, order)
+            try:
+                p = sf.compose_inverse(p, dp, order)
+            except np.linalg.LinAlgError:
+                status = Status.ILL_CONDITIONED
+                break
             if sf.max_corner_motion(dp, opt.half_size, order) < opt.convergence_threshold_px:
                 status = Status.OK
                 break
-        out.iterations[i] = it
-        out.status[i] = status
+        out.iterations[k] = it
+        out.status[k] = status
         if status in (Status.OK, Status.NOT_CONVERGED):
             wx, wy = sf.warp(p, refs.dx, refs.dy, order)
             xs, ys = c[0] + wx, c[1] + wy
@@ -189,12 +206,12 @@ def solve_reference(refs: ReferenceSubsets, target: BSplineImage, p0: np.ndarray
                 g = target.evaluate(xs, ys)
                 gt = g - g.mean()
                 gn = float(np.sqrt(gt @ gt))
-                out.znssd[i] = _znssd(ft, fn, gt, gn) if gn > 0 else np.nan
+                out.znssd[k] = _znssd(ft, fn, gt, gn) if gn > 0 else np.nan
             else:
-                out.status[i] = Status.OUT_OF_BOUNDS
+                out.status[k] = Status.OUT_OF_BOUNDS
                 continue
-            out.params[i] = p
-            out.xy[i] = c + sf.center_displacement(p, order)
+            out.params[k] = p
+            out.xy[k] = c + sf.center_displacement(p, order)
     return out
 
 
@@ -212,13 +229,21 @@ class ICGNSolver:
     def prepare_reference(self, ref: BSplineImage, centers: np.ndarray) -> ReferenceSubsets:
         return prepare_reference(ref, centers, self.options)
 
-    def solve(self, refs: ReferenceSubsets, target: BSplineImage, p0: np.ndarray | None = None) -> DICBatchResult:
+    def solve(
+        self,
+        refs: ReferenceSubsets,
+        target: BSplineImage,
+        p0: np.ndarray | None = None,
+        indices: np.ndarray | None = None,
+    ) -> DICBatchResult:
+        """Solve all POIs, or only `indices` (result and p0 then follow that order)."""
         if refs.options != self.options:
             raise ValueError("reference subsets were prepared with different options")
         if p0 is None:
-            p0 = np.zeros((len(refs), sf.n_params(self.options.shape_order)))
+            n = len(refs) if indices is None else np.asarray(indices).size
+            p0 = np.zeros((n, sf.n_params(self.options.shape_order)))
         if self.backend == "numpy":
-            return solve_reference(refs, target, p0)
+            return solve_reference(refs, target, p0, indices)
         from .backends.numba_cpu import solve_numba
 
-        return solve_numba(refs, target, p0)
+        return solve_numba(refs, target, p0, indices)

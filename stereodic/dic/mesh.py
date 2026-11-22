@@ -53,3 +53,46 @@ def make_poi_grid(
         keep = inside[xy[:, 1].astype(int), xy[:, 0].astype(int)]
         xy = xy[keep]
     return POISet(point_ids=np.arange(len(xy), dtype=np.int64), xy=xy)
+
+
+def grid_neighbors(xy: np.ndarray, step: float | None = None) -> list[np.ndarray]:
+    """4-neighbourhood of POIs on a regular grid (indices into xy).
+
+    step: grid spacing; default is the median nearest-neighbour distance. Points closer
+    than 1.01 x step are neighbours, so diagonal points are excluded and gaps in the grid
+    (masked regions) break the connectivity, which keeps RG-DIC from jumping across them.
+    """
+    from scipy.spatial import cKDTree
+
+    xy = np.asarray(xy, dtype=np.float64).reshape(-1, 2)
+    tree = cKDTree(xy)
+    if step is None:
+        if len(xy) < 2:
+            return [np.zeros(0, dtype=np.int64) for _ in range(len(xy))]
+        d, _ = tree.query(xy, k=2)
+        step = float(np.median(d[:, 1]))
+    pairs = tree.query_pairs(1.01 * step, output_type="ndarray")
+    nb: list[list[int]] = [[] for _ in range(len(xy))]
+    for i, j in pairs:
+        nb[i].append(int(j))
+        nb[j].append(int(i))
+    return [np.asarray(sorted(n), dtype=np.int64) for n in nb]
+
+
+def grid_triangles(xy: np.ndarray, valid: np.ndarray | None = None, step: float | None = None) -> np.ndarray:
+    """Triangles (M, 3) of POI indices: Delaunay on the reference positions, keeping only
+    triangles whose edges are at most sqrt(2) x step long (no bridging over gaps)."""
+    from scipy.spatial import Delaunay, cKDTree
+
+    xy = np.asarray(xy, dtype=np.float64).reshape(-1, 2)
+    idx = np.arange(len(xy)) if valid is None else np.nonzero(np.asarray(valid, dtype=bool))[0]
+    if idx.size < 3:
+        return np.zeros((0, 3), dtype=np.int64)
+    pts = xy[idx]
+    if step is None:
+        d, _ = cKDTree(pts).query(pts, k=2)
+        step = float(np.median(d[:, 1]))
+    tri = Delaunay(pts).simplices
+    e = np.stack([np.linalg.norm(pts[tri[:, a]] - pts[tri[:, b]], axis=1) for a, b in ((0, 1), (1, 2), (2, 0))], axis=1)
+    keep = e.max(axis=1) <= np.sqrt(2) * step * 1.01
+    return idx[tri[keep]].astype(np.int64)

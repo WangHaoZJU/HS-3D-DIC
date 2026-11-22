@@ -60,6 +60,52 @@ class Affine:
         return self.forward(X) - np.asarray(X, dtype=np.float64)
 
 
+@dataclass(frozen=True)
+class Quadratic:
+    """Second-order displacement field about `center` (d = X - center):
+
+    u(d) = cu[0] + cu[1] dx + cu[2] dy + 1/2 cu[3] dx^2 + cu[4] dx dy + 1/2 cu[5] dy^2, same for v with cv.
+    Matches the parameterisation of the order-2 DIC shape function.
+    """
+
+    cu: np.ndarray
+    cv: np.ndarray
+    center: np.ndarray = field(default_factory=lambda: np.zeros(2))
+
+    @staticmethod
+    def _poly(c: np.ndarray, d: np.ndarray) -> np.ndarray:
+        dx, dy = d[:, 0], d[:, 1]
+        return c[0] + c[1] * dx + c[2] * dy + 0.5 * c[3] * dx * dx + c[4] * dx * dy + 0.5 * c[5] * dy * dy
+
+    def displacement(self, X: np.ndarray) -> np.ndarray:
+        d = np.asarray(X, dtype=np.float64) - np.asarray(self.center, dtype=np.float64)
+        cu, cv = np.asarray(self.cu, dtype=np.float64), np.asarray(self.cv, dtype=np.float64)
+        return np.column_stack([self._poly(cu, d), self._poly(cv, d)])
+
+    def forward(self, X: np.ndarray) -> np.ndarray:
+        return np.asarray(X, dtype=np.float64) + self.displacement(X)
+
+    def inverse(self, x: np.ndarray, iterations: int = 30) -> np.ndarray:
+        """Material point X with forward(X) = x (Newton iterations)."""
+        x = np.asarray(x, dtype=np.float64)
+        X = x - self.displacement(x)
+        for _ in range(iterations):
+            r = self.forward(X) - x
+            X = X - np.linalg.solve(self.jacobian(X), r[..., None])[..., 0]
+            if np.abs(r).max() < 1e-12:
+                break
+        return X
+
+    def jacobian(self, X: np.ndarray) -> np.ndarray:
+        d = np.asarray(X, dtype=np.float64) - np.asarray(self.center, dtype=np.float64)
+        dx, dy = d[:, 0], d[:, 1]
+        J = np.zeros((d.shape[0], 2, 2))
+        for r, c in enumerate((np.asarray(self.cu, dtype=np.float64), np.asarray(self.cv, dtype=np.float64))):
+            J[:, r, 0] = (r == 0) + c[1] + c[3] * dx + c[4] * dy
+            J[:, r, 1] = (r == 1) + c[2] + c[4] * dx + c[5] * dy
+        return J
+
+
 # ------------------------------------------------------------------------- kernel
 @njit(parallel=True, cache=True)
 def _render_kernel(
@@ -159,6 +205,121 @@ def render_transmission(
         gx0, gy0, cell, ncx, ncy, cell_start, cell_items, out,
     )
     return out
+
+
+# ------------------------------------------------------------- pointwise renderer
+@njit(parallel=True, cache=True)
+def _density_kernel(px, py, cx, cy, ixx, ixy, iyy, amp, qmax, gx0, gy0, cell, ncx, ncy, cell_start, cell_items, out):
+    # pragma: no cover - compiled
+    for k in prange(px.shape[0]):
+        x = px[k]
+        y = py[k]
+        if not (np.isfinite(x) and np.isfinite(y)):
+            out[k] = np.nan
+            continue
+        ci = int(np.floor((x - gx0) / cell))
+        cj = int(np.floor((y - gy0) / cell))
+        s = 0.0
+        for dj in range(-1, 2):
+            jj = cj + dj
+            if jj < 0 or jj >= ncy:
+                continue
+            for di in range(-1, 2):
+                ii = ci + di
+                if ii < 0 or ii >= ncx:
+                    continue
+                cid = jj * ncx + ii
+                for p in range(cell_start[cid], cell_start[cid + 1]):
+                    b = cell_items[p]
+                    dx = x - cx[b]
+                    dy = y - cy[b]
+                    q = ixx[b] * dx * dx + 2.0 * ixy[b] * dx * dy + iyy[b] * dy * dy
+                    if q < qmax:
+                        s += amp[b] * np.exp(-0.5 * q)
+        out[k] = s
+
+
+def texture_density(texture: SpeckleTexture, points: np.ndarray) -> np.ndarray:
+    """Optical density S at material points (..., 2), bucketed (exact up to the 1e-13 cutoff).
+
+    Non-finite points give NaN.
+    """
+    pts = np.asarray(points, dtype=np.float64)
+    shape = pts.shape[:-1]
+    pts = pts.reshape(-1, 2)
+    centers = texture.centers
+    inv = np.linalg.inv(texture.covariances)
+    eig_max = np.linalg.eigvalsh(texture.covariances)[:, -1]
+    cell = float(np.sqrt(_Q_MAX * eig_max.max())) + 1e-9 if len(eig_max) else 1.0
+    lo = centers.min(axis=0) - cell
+    hi = centers.max(axis=0) + cell
+    ncx = int(np.ceil((hi[0] - lo[0]) / cell)) + 1
+    ncy = int(np.ceil((hi[1] - lo[1]) / cell)) + 1
+    ci = np.floor((centers[:, 0] - lo[0]) / cell).astype(np.int64)
+    cj = np.floor((centers[:, 1] - lo[1]) / cell).astype(np.int64)
+    cell_id = cj * ncx + ci
+    order = np.argsort(cell_id, kind="stable")
+    cell_items = order.astype(np.int64)
+    counts = np.bincount(cell_id, minlength=ncx * ncy)
+    cell_start = np.concatenate([[0], np.cumsum(counts)]).astype(np.int64)
+    out = np.empty(pts.shape[0])
+    _density_kernel(
+        np.ascontiguousarray(pts[:, 0]), np.ascontiguousarray(pts[:, 1]),
+        np.ascontiguousarray(centers[:, 0]), np.ascontiguousarray(centers[:, 1]),
+        np.ascontiguousarray(inv[:, 0, 0]), np.ascontiguousarray(inv[:, 0, 1]), np.ascontiguousarray(inv[:, 1, 1]),
+        np.ascontiguousarray(texture.amplitudes), _Q_MAX, lo[0], lo[1], cell, ncx, ncy, cell_start, cell_items, out,
+    )
+    return out.reshape(shape)
+
+
+def render_function(
+    shape: tuple[int, int],
+    inverse_map,
+    transmission_fn,
+    oversample: int = 4,
+    background: float = 1.0,
+) -> np.ndarray:
+    """Pixel-integrated transmission of an arbitrary pattern through an exact inverse map.
+
+    inverse_map(x): image points (K, 2) -> material points (K, 2), NaN where no surface is seen.
+    transmission_fn(X): material points (K, 2) -> transmission in [0, 1].
+    """
+    if oversample < 1:
+        raise ValueError("oversample must be >= 1")
+    height, width = (int(v) for v in shape)
+    nodes, weights = np.polynomial.legendre.leggauss(int(oversample))
+    nodes, weights = nodes / 2.0, weights / 2.0
+    out = np.zeros((height, width))
+    ys, xs = np.mgrid[0:height, 0:width].astype(np.float64)
+    for oy, wy in zip(nodes, weights):
+        for ox, wx in zip(nodes, weights):
+            x = np.column_stack([(xs + ox).ravel(), (ys + oy).ravel()])
+            X = np.asarray(inverse_map(x), dtype=np.float64)
+            seen = np.all(np.isfinite(X), axis=1)
+            t = np.full(X.shape[0], float(background))
+            if seen.any():
+                t[seen] = transmission_fn(X[seen])
+            out += wy * wx * t.reshape(height, width)
+    return out
+
+
+def render_pointwise(
+    texture: SpeckleTexture,
+    shape: tuple[int, int],
+    inverse_map,
+    oversample: int = 4,
+    background: float = 1.0,
+) -> np.ndarray:
+    """Pixel-integrated transmission of a speckle texture using an exact inverse map.
+
+    inverse_map(x) takes image points (K, 2) and returns material points (K, 2); NaN marks
+    points that see no textured surface (they get transmission `background`).
+    Unlike `render_transmission`, no local-affine approximation of the blobs is made, so
+    curved or projective mappings are rendered exactly (up to the Gauss–Legendre rule).
+    """
+    return render_function(
+        shape, inverse_map, lambda X: np.exp(-texture_density(texture, X)), oversample, background
+    )
 
 
 # ------------------------------------------------------------------------- sensor

@@ -11,7 +11,8 @@ from stereodic.dic import shape_functions as sf
 from stereodic.dic.icgn import ICGNOptions, ICGNSolver, subset_offsets
 from stereodic.dic.interp import BSplineImage
 from stereodic.dic.mesh import make_poi_grid
-from stereodic.synth import Affine, SensorModel, SpeckleTexture, Translation, render_frame
+from stereodic.synth import Affine, Quadratic, SensorModel, SpeckleTexture, Translation, render_frame, render_pointwise
+from stereodic.synth.render import apply_sensor
 
 SHAPE = (120, 140)
 
@@ -50,7 +51,7 @@ def test_identical_images_give_zero(texture):
     assert np.nanmax(res.znssd) < 1e-20
 
 
-@pytest.mark.parametrize("order", [0, 1])
+@pytest.mark.parametrize("order", [0, 1, 2])
 @pytest.mark.parametrize("interp_order", [3, 5])
 def test_subpixel_translation(texture, order, interp_order):
     shift = (0.37, -0.62)
@@ -119,3 +120,31 @@ def test_failure_statuses(texture):
     # a subset pushed out of the image by the initial guess
     far = solver.solve(refs, tgt, sf.from_displacement(np.array([[0, 0], [0, 0], [200.0, 0]]), 1))
     assert far.status[2] == Status.OUT_OF_BOUNDS
+
+
+def test_quadratic_deformation_needs_second_order(texture):
+    """Curvature of the displacement field: order 2 recovers it, order 1 is biased."""
+    m = Quadratic(
+        cu=np.array([0.6, 0.004, -0.002, 4e-4, -3e-4, 2e-4]),
+        cv=np.array([-0.4, 0.002, 0.003, -2e-4, 4e-4, -4e-4]),
+        center=np.array([70.0, 60.0]),
+    )
+    # exact (pointwise) rendering: the blob renderer's local-affine approximation would add ~0.002 px
+    ref = BSplineImage(apply_sensor(render_pointwise(texture, SHAPE, lambda x: x, 4), SensorModel()), 5)
+    tgt = BSplineImage(apply_sensor(render_pointwise(texture, SHAPE, m.inverse, 4), SensorModel()), 5)
+    pois = make_poi_grid(SHAPE, 41, 15, margin=10)
+    truth = m.forward(pois.xy)
+    errs = {}
+    for order in (1, 2):
+        solver = ICGNSolver(ICGNOptions(subset_size=41, shape_order=order))
+        p0 = sf.from_displacement(m.displacement(pois.xy).round(), order)
+        res = solver.solve(solver.prepare_reference(ref, pois.xy), tgt, p0)
+        ok = res.status == Status.OK  # a few subsets near the edge are pushed out of the image
+        assert ok.mean() > 0.9
+        errs[order] = np.abs(res.xy[ok] - truth[ok]).max()
+        if order == 2:
+            # local second derivatives equal the global ones everywhere
+            np.testing.assert_allclose(np.median(res.params[ok][:, [3, 4, 5, 9, 10, 11]], axis=0),
+                                       [4e-4, -3e-4, 2e-4, -2e-4, 4e-4, -4e-4], atol=5e-5)
+    assert errs[2] < 0.004
+    assert errs[1] > 5 * errs[2]

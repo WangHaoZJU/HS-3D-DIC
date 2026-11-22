@@ -91,7 +91,7 @@ def test_domain_checks(speckle_image):
 
 
 # ------------------------------------------------------------ shape functions
-@pytest.mark.parametrize("order", [0, 1])
+@pytest.mark.parametrize("order", [0, 1, 2])
 def test_matrix_roundtrip_and_inverse_compose(order):
     rng = np.random.default_rng(2)
     p = rng.normal(0, 0.05, sf.n_params(order))
@@ -101,7 +101,7 @@ def test_matrix_roundtrip_and_inverse_compose(order):
     np.testing.assert_allclose(sf.compose_inverse(p, sf.identity(order), order), p, atol=1e-15)
 
 
-@pytest.mark.parametrize("order", [0, 1])
+@pytest.mark.parametrize("order", [0, 1, 2])
 def test_jacobian_matches_finite_difference(order):
     dx = np.array([-3.0, 0.0, 2.0, 5.0])
     dy = np.array([1.0, -4.0, 0.0, 2.0])
@@ -115,9 +115,57 @@ def test_jacobian_matches_finite_difference(order):
         np.testing.assert_allclose((yp - dy) / e, J[:, 1, k], atol=1e-6)
 
 
-def test_second_order_not_yet():
-    with pytest.raises(NotImplementedError):
-        sf.n_params(2)
+def test_second_order_warp_definition():
+    p = np.array([0.5, 0.01, -0.02, 1e-3, -2e-3, 3e-3, -0.4, 0.03, 0.02, -1e-3, 4e-3, 2e-3])
+    dx = np.array([-7.0, 3.0, 10.0])
+    dy = np.array([2.0, -5.0, 9.0])
+    xp, yp = sf.warp(p, dx, dy, 2)
+    ex = dx + p[0] + p[1] * dx + p[2] * dy + 0.5 * p[3] * dx**2 + p[4] * dx * dy + 0.5 * p[5] * dy**2
+    ey = dy + p[6] + p[7] * dx + p[8] * dy + 0.5 * p[9] * dx**2 + p[10] * dx * dy + 0.5 * p[11] * dy**2
+    np.testing.assert_allclose(xp, ex, atol=1e-13)
+    np.testing.assert_allclose(yp, ey, atol=1e-13)
+    np.testing.assert_array_equal(sf.center_displacement(p, 2), [0.5, -0.4])
+
+
+def test_second_order_composition_is_second_order_accurate():
+    """W(p) o W(dp)^-1 o W(dp) == W(p) up to the truncated (third-order) terms."""
+    rng = np.random.default_rng(5)
+    scale = np.array([1, 1e-2, 1e-2, 1e-3, 1e-3, 1e-3] * 2)
+    p = rng.normal(0, 1, 12) * scale
+    dp = rng.normal(0, 1, 12) * scale * 0.1
+    q = sf.compose_inverse(p, dp, 2)
+    dx = np.linspace(-15, 15, 7)
+    dy = np.linspace(15, -15, 7)
+    x1, y1 = sf.warp(dp, dx, dy, 2)
+    # W(q) at W(dp)(x) must equal W(p)(x); evaluate W(q) on the warped points
+    xq, yq = sf.warp(q, x1, y1, 2)
+    xp, yp = sf.warp(p, dx, dy, 2)
+    assert np.max(np.abs(xq - xp)) < 2e-3 and np.max(np.abs(yq - yp)) < 2e-3
+
+
+@pytest.mark.parametrize("order", [1, 2])
+def test_shift_origin_is_exact(order):
+    rng = np.random.default_rng(9)
+    p = rng.normal(0, 1e-2, sf.n_params(order))
+    p[0], p[sf._V_INDEX[order]] = 3.2, -1.7
+    delta = np.array([5.0, -10.0])
+    q = sf.shift_origin(p, delta, order)
+    dx = np.array([-4.0, 0.0, 6.0])
+    dy = np.array([1.0, 3.0, -2.0])
+    xq, yq = sf.warp(q, dx, dy, order)
+    xp, yp = sf.warp(p, dx + delta[0], dy + delta[1], order)
+    np.testing.assert_allclose(xq + delta[0], xp, atol=1e-12)
+    np.testing.assert_allclose(yq + delta[1], yp, atol=1e-12)
+
+
+def test_convert_and_from_affine():
+    p1 = np.array([0.5, 0.01, 0.02, -0.3, 0.03, -0.01])
+    p2 = sf.convert(p1, 1, 2)
+    np.testing.assert_array_equal(sf.convert(p2, 2, 1), p1)
+    np.testing.assert_array_equal(sf.convert(p1, 1, 0), [0.5, -0.3])
+    A = np.array([[1.01, 0.02, 0.5], [0.03, 0.99, -0.3]])
+    np.testing.assert_allclose(sf.from_affine(A, 1), p1, atol=1e-15)
+    np.testing.assert_allclose(sf.from_affine(A, 2), p2, atol=1e-15)
 
 
 def test_center_displacement_and_corner_motion():
@@ -159,3 +207,18 @@ def test_global_shift():
     tgt = render_frame(tex, (128, 128), Translation(3.0, 2.0), oversample=2)
     uv, _ = global_shift(ref, tgt)
     np.testing.assert_allclose(uv, [3.0, 2.0], atol=0.1)
+
+
+def test_grid_neighbors_and_triangles():
+    from stereodic.dic.mesh import grid_neighbors, grid_triangles
+
+    gx, gy = np.meshgrid(np.arange(4) * 5.0, np.arange(3) * 5.0)
+    xy = np.column_stack([gx.ravel(), gy.ravel()])
+    nb = grid_neighbors(xy)
+    assert nb[0].tolist() == [1, 4] and nb[5].tolist() == [1, 4, 6, 9]
+    tri = grid_triangles(xy)
+    assert len(tri) == 2 * 3 * 2
+    valid = np.ones(12, bool)
+    valid[5] = False
+    assert len(grid_triangles(xy, valid)) < len(tri)
+    assert not np.isin(5, grid_triangles(xy, valid))

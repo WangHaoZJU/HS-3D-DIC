@@ -76,3 +76,26 @@ def test_s1_pair_truth():
     assert ref.shape == deformed.shape == (40, 50)
     np.testing.assert_array_equal(mapping.displacement(np.zeros((3, 2))), [[0.25, -0.5]] * 3)
     assert not np.array_equal(ref, deformed)
+
+
+def test_pointwise_renderer_matches_blob_renderer_for_translation():
+    from stereodic.synth import Translation, render_pointwise, render_transmission, texture_density
+
+    tex = SpeckleTexture.random((-20, -20, 80, 70), seed=4)
+    pts = np.random.default_rng(1).uniform(0, 60, (200, 2))
+    np.testing.assert_allclose(texture_density(tex, pts), tex.density_at(pts), atol=1e-11)
+    a = render_transmission(tex, (50, 60), Translation(0.3, -0.2), oversample=4)
+    b = render_pointwise(tex, (50, 60), lambda x: x - np.array([0.3, -0.2]), oversample=4)
+    np.testing.assert_allclose(a, b, atol=1e-12)
+    # points that see no surface get the background value
+    c = render_pointwise(tex, (10, 10), lambda x: np.full_like(x, np.nan), oversample=2, background=0.5)
+    np.testing.assert_allclose(c, 0.5)
+
+
+def test_quadratic_inverse():
+    from stereodic.synth import Quadratic
+
+    m = Quadratic(cu=np.array([0.6, 0.004, -0.002, 4e-4, -3e-4, 2e-4]),
+                  cv=np.array([-0.4, 0.002, 0.003, -2e-4, 4e-4, -4e-4]), center=np.array([50.0, 40.0]))
+    X = np.random.default_rng(2).uniform(0, 100, (50, 2))
+    np.testing.assert_allclose(m.inverse(m.forward(X)), X, atol=1e-10)

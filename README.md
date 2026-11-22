@@ -12,8 +12,8 @@ Python package: `stereodic`. Technical design: [docs/StereoDIC_Technical_Design.
 | --- | --- | --- |
 | M0 | Repo skeleton, config, types, TIFF reader, HDF5 store, synthetic speckle | done (Linux GPU check pending) |
 | M1 | 2D DIC core (B-spline, IC-GN, Numba), benchmarks B01/B03 | done |
-| M2 | Calibration + static stereo | next |
-| M3 | Temporal DIC, CUDA backend, frequencies | — |
+| M2 | Calibration (ChArUco), 2nd-order IC-GN, stereo matching (SIFT + RG-DIC), triangulation, reference shape, B04 | done (real-data E1/E2 pending) |
+| M3 | Temporal DIC, CUDA backend, frequencies | next |
 | M4 | Harmonic fit, ODS, FDD, mode shapes | — |
 
 ## Machines and workflow
@@ -64,6 +64,24 @@ Check the environment and available compute backends:
 uv run python scripts/check_env.py
 ```
 
+## Running an experiment
+
+1. Copy `configs/experiments/example.yaml` to `configs/experiments/<name>.yaml` and edit paths,
+   the ChArUco board (`calibration.board`), ROI / POI mask and reference frame.
+2. Calibrate (writes `calibration_file` + `.json` report + residual plot):
+
+```bash
+uv run python scripts/calibrate.py --config configs/experiments/<name>.yaml -v
+```
+
+3. Reference stage: POI grid on the left reference frame, stereo matching, 3D reference shape:
+
+```bash
+uv run python scripts/run_dic.py --config configs/experiments/<name>.yaml --stage stereo -v
+```
+
+Temporal DIC, displacement and vibration analysis follow in M3/M4.
+
 ## Tests
 
 ```bash
@@ -77,6 +95,7 @@ uv run pytest -m cuda      # GPU tests (Linux)
 ```bash
 uv run python -m benchmarks.b01_subpixel_bias [--quick] [--diameter 4]   # sub-pixel bias curve
 uv run python -m benchmarks.b03_subset_size [--quick] [--interp 5]       # error vs subset size, throughput
+uv run python -m benchmarks.b04_stereo_s4 [--quick]                      # S4: stereo shape + 3D rigid motion
 ```
 
 Results (CSV/PNG) go to `results/benchmarks/` (git-ignored).
@@ -93,8 +112,11 @@ Results (CSV/PNG) go to `results/benchmarks/` (git-ignored).
 stereodic/
   core/        types, config, status codes, provenance
   io/          image sequences (TIFF), HDF5 result store
-  synth/       independent synthetic speckle renderer (ground truth)
-  dic/         B-spline interpolation, shape functions, IC-GN, initial guesses, backends
+  synth/       independent synthetic renderer: speckle, stereo scenes, ChArUco boards (ground truth)
+  calibration/ camera model, ChArUco detection, mono/stereo calibration, report
+  dic/         B-spline interpolation, shape functions (0/1/2), IC-GN, SIFT/RG-DIC stereo matching, backends
+  recon/       triangulation, normals and local frames, reference shape
+  pipeline.py  stage orchestration (calibrate, stereo)
 benchmarks/    synthetic accuracy and throughput benchmarks
 scripts/       command-line entry points
 tests/         unit / integration / backends (cuda)

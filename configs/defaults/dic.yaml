@@ -12,9 +12,12 @@ solver:
   min_gray_std: 1.0      # gray levels; subsets with lower std are LOW_TEXTURE
   max_condition: 1.0e+10 # scaled reference Hessian condition limit
 stereo:
-  shape_order: 2         # set to 1 until second-order IC-GN passes S1/S4
-  initialization: sift_affine   # sift_affine | epipolar_zncc
+  shape_order: 2         # second-order: perspective difference and curvature between views
+  initialization: sift_affine
   reliability_guided: true
+  max_znssd: 0.4         # HIGH_RESIDUAL above this (ZNSSD = 2 (1 - ZNCC))
+  max_reprojection_px: 0.5      # GEOMETRY_INCONSISTENT above this
+  seed_radius_px: 40     # SIFT matches within this radius give a POI's local affine guess
 temporal:
   shape_order: 1
   initialization: previous_solution

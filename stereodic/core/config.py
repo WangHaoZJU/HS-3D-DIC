@@ -51,8 +51,11 @@ class SolverConfig(_Strict):
 
 class StereoConfig(_Strict):
     shape_order: Literal[1, 2] = 2
-    initialization: Literal["sift_affine", "epipolar_zncc"] = "sift_affine"
+    initialization: Literal["sift_affine"] = "sift_affine"
     reliability_guided: bool = True
+    max_znssd: float = Field(0.4, gt=0, le=4)  # HIGH_RESIDUAL above (ZNSSD = 2 (1 - ZNCC))
+    max_reprojection_px: float = Field(0.5, gt=0)  # GEOMETRY_INCONSISTENT above (needs calibration)
+    seed_radius_px: float = Field(40.0, gt=0)  # SIFT matches within this radius fit a local affine guess
 
 
 class TemporalConfig(_Strict):
@@ -84,6 +87,9 @@ class DICConfig(_Strict):
 class CameraSource(_Strict):
     path: Path
     pattern: str = "*.tif"
+    # position of the recorded image window on the full sensor used for calibration
+    # (cameras often record a cropped window to reach high frame rates)
+    sensor_origin: list[int] = Field(default_factory=lambda: [0, 0])
 
 
 class CamerasConfig(_Strict):
@@ -92,10 +98,39 @@ class CamerasConfig(_Strict):
     frame_rate_hz: float = Field(gt=0)
 
 
+class CharucoConfig(_Strict):
+    squares_x: int = Field(ge=3)
+    squares_y: int = Field(ge=3)
+    square_mm: float = Field(gt=0)
+    marker_mm: float = Field(gt=0)
+    dictionary: str = "DICT_5X5_100"
+    legacy_pattern: bool = False
+
+
+class CalibrationConfig(_Strict):
+    """Stereo calibration from synchronized ChArUco views (docs §3.5)."""
+
+    board: CharucoConfig
+    left: CameraSource  # calibration images; pairs are matched by sorted file order
+    right: CameraSource
+    distortion: Literal["k1k2p1p2", "k1k2p1p2k3", "rational"] = "k1k2p1p2"
+    refine_stereo_intrinsics: bool = True
+    outlier_factor: float = Field(3.0, gt=1)
+    min_views: int = Field(6, ge=3)
+    min_corners: int = Field(8, ge=4)
+    roi_origin: list[int] = Field(default_factory=lambda: [0, 0])  # if calibration images are crops
+    sensor_size: list[int] | None = None  # full-frame [width, height]; default = calibration image size
+
+
 class FramesConfig(_Strict):
     start: int = Field(0, ge=0)
     stop: int | None = None
     step: int = Field(1, ge=1)
+
+
+class ReconConfig(_Strict):
+    span_direction: list[float] = Field(default_factory=lambda: [0.0, -1.0, 0.0])  # left-camera frame
+    normal_radius_steps: float = Field(2.5, gt=1)  # PCA radius in POI spacings
 
 
 class LocalConfig(_Strict):
@@ -107,12 +142,15 @@ class ExperimentConfig(_Strict):
     name: str
     description: str = ""
     cameras: CamerasConfig
-    roi: list[int] | None = None
+    roi: list[int] | None = None  # POI region in left-image coordinates [x0, y0, width, height]
+    poi_mask: Path | None = None  # optional image (same size as left frames), nonzero = measure here
     frames: FramesConfig = FramesConfig()
     reference_frame: int = Field(0, ge=0)
     calibration_file: Path | None = None
+    calibration: CalibrationConfig | None = None
     output_file: Path | None = None
     dic: DICConfig = DICConfig()
+    recon: ReconConfig = ReconConfig()
     local: LocalConfig = LocalConfig()
 
     @field_validator("roi")
