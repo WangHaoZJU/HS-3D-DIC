@@ -201,37 +201,76 @@ def _selected_frame_indices(cfg: ExperimentConfig, n_left: int, n_right: int) ->
     return np.asarray(selected, dtype=np.int64)
 
 
-def _temporal_stage_hash(cfg: ExperimentConfig, frame_indices: np.ndarray, calibration_path: Path) -> str:
+def _temporal_stage_hash(
+    cfg: ExperimentConfig,
+    frame_indices: np.ndarray,
+    calibration_path: Path,
+    stereo_hash: str = "",
+) -> str:
     return config_hash(
         {
+            "stereo_hash": stereo_hash,
+            "dic_poi": cfg.dic.poi.model_dump(mode="json"),
             "dic_temporal": cfg.dic.temporal.model_dump(mode="json"),
             "solver": cfg.dic.solver.model_dump(mode="json"),
             "interpolation": cfg.dic.interpolation.model_dump(mode="json"),
             "frames": frame_indices.tolist(),
             "reference_frame": cfg.reference_frame,
+            "sensor_origins": [cfg.cameras.left.sensor_origin, cfg.cameras.right.sensor_origin],
             "calibration_sha256": _file_sha256(calibration_path),
         }
     )
 
 
-def _ensure_temporal_datasets(store, n_frames: int, n_points: int, n_params: int, shape_order: int, save_params: bool) -> None:
+def _ensure_timeseries(
+    store,
+    name: str,
+    n_frames: int,
+    n_points: int,
+    n_components: int | None = None,
+    *,
+    dtype: np.dtype | type = np.float64,
+    fill_value=None,
+    reset: bool = False,
+):
+    expected_shape = (n_frames, n_points) if n_components is None else (n_frames, n_points, n_components)
+    if name in store.h5:
+        existing = store.h5[name]
+        if reset or existing.shape != expected_shape or existing.dtype != np.dtype(dtype):
+            del store.h5[name]
+    if name not in store.h5:
+        return store.create_timeseries(name, n_frames, n_points, n_components, dtype=dtype, fill_value=fill_value)
+    return store.h5[name]
+
+
+def _ensure_temporal_datasets(
+    store,
+    n_frames: int,
+    n_points: int,
+    n_params: int,
+    shape_order: int,
+    save_params: bool,
+    *,
+    reset: bool = False,
+) -> None:
     for side in ("left", "right"):
         prefix = f"dic/{side}/"
-        if f"{prefix}xy" not in store.h5:
-            ds = store.create_timeseries(f"{prefix}xy", n_frames, n_points, 2)
-            ds.attrs["shape_order"] = shape_order
-        if f"{prefix}znssd" not in store.h5:
-            store.create_timeseries(f"{prefix}znssd", n_frames, n_points, dtype=np.float32)
-        if f"{prefix}iterations" not in store.h5:
-            store.create_timeseries(f"{prefix}iterations", n_frames, n_points, dtype=np.uint8, fill_value=0)
-        if f"{prefix}status" not in store.h5:
-            store.create_timeseries(f"{prefix}status", n_frames, n_points, dtype=np.uint8, fill_value=0)
-        if save_params and f"{prefix}params" not in store.h5:
-            ds = store.create_timeseries(f"{prefix}params", n_frames, n_points, n_params)
-            ds.attrs["shape_order"] = shape_order
-    if "progress/dic_frames_done" not in store.h5:
+        ds_xy = _ensure_timeseries(store, f"{prefix}xy", n_frames, n_points, 2, reset=reset)
+        ds_xy.attrs["shape_order"] = shape_order
+        _ensure_timeseries(store, f"{prefix}znssd", n_frames, n_points, dtype=np.float32, reset=reset)
+        _ensure_timeseries(store, f"{prefix}iterations", n_frames, n_points, dtype=np.uint8, fill_value=0, reset=reset)
+        _ensure_timeseries(store, f"{prefix}status", n_frames, n_points, dtype=np.uint8, fill_value=0, reset=reset)
+        if save_params:
+            ds_p = _ensure_timeseries(store, f"{prefix}params", n_frames, n_points, n_params, reset=reset)
+            ds_p.attrs["shape_order"] = shape_order
+        elif reset and f"{prefix}params" in store.h5:
+            del store.h5[f"{prefix}params"]
+    done_name = "progress/dic_frames_done"
+    if done_name in store.h5 and (reset or store.h5[done_name].shape != (n_frames, 2)):
+        del store.h5[done_name]
+    if done_name not in store.h5:
         store.h5.create_dataset(
-            "progress/dic_frames_done",
+            done_name,
             shape=(n_frames, 2),
             dtype=np.bool_,
             chunks=(min(64, n_frames), 2),
@@ -239,27 +278,43 @@ def _ensure_temporal_datasets(store, n_frames: int, n_points: int, n_params: int
         )
 
 
-def _previous_params(store, side: str, row: int, centers: np.ndarray, n_params: int) -> np.ndarray:
-    """Recover a previous-frame initial guess after a resumed run."""
-    if row < 0:
-        return np.zeros((len(centers), n_params), dtype=np.float64)
+def _update_previous_from_store(
+    store,
+    side: str,
+    row: int,
+    centers: np.ndarray,
+    previous_params: np.ndarray,
+    shape_order: int,
+) -> np.ndarray:
+    """Update carried-over initial guess for points that succeeded on a resumed row."""
+    from .core.status import Status
+
+    st = store.h5[f"dic/{side}/status"][row]
+    good = st == Status.OK
+    if not np.any(good):
+        return previous_params
+    out = previous_params.copy()
     path = f"dic/{side}/params"
     if path in store.h5:
         values = store.h5[path][row]
-        return np.nan_to_num(values, nan=0.0)
+        ok = good & np.all(np.isfinite(values), axis=1)
+        out[ok] = values[ok]
+        return out
     xy = store.h5[f"dic/{side}/xy"][row]
-    delta = np.nan_to_num(xy - centers, nan=0.0)
-    return sf.from_displacement(delta, int(store.h5[f"dic/{side}/xy"].attrs.get("shape_order", 1)))
+    ok = good & np.all(np.isfinite(xy), axis=1)
+    if np.any(ok):
+        out[ok] = sf.from_displacement(xy[ok] - centers[ok], shape_order)
+    return out
 
 
 def run_temporal(cfg: ExperimentConfig, force: bool = False) -> Path:
     """Run fixed-reference DIC for both cameras with frame-level checkpoints."""
+    from .core.status import Status
     from .core.types import ROI
     from .dic import shape_functions as sf
     from .dic.temporal import TemporalMatchOptions, TemporalTracker
     from .io.sequence import open_sequence
     from .io.sync import pair_timestamps, sequence_timestamps
-    from .calibration.report import load_calibration
     from .io.storage import ResultStore
 
     if cfg.output_file is None or cfg.calibration_file is None:
@@ -271,12 +326,14 @@ def run_temporal(cfg: ExperimentConfig, force: bool = False) -> Path:
     seq_l = open_sequence(cfg.data_path(cfg.cameras.left.path), cfg.cameras.left.pattern)
     seq_r = open_sequence(cfg.data_path(cfg.cameras.right.path), cfg.cameras.right.pattern)
     frame_ids = _selected_frame_indices(cfg, len(seq_l), len(seq_r))
-    stage_hash = _temporal_stage_hash(cfg, frame_ids, cfg.data_path(cfg.calibration_file))
     options = TemporalMatchOptions.from_config(cfg.dic)
     n_params = sf.n_params(options.icgn.shape_order)
     backend = cfg.dic.backend
 
     with ResultStore.open(out, "r+") as store:
+        prog = store.h5.require_group("progress")
+        stereo_hash = str(prog.attrs.get("stereo_config_hash", ""))
+        stage_hash = _temporal_stage_hash(cfg, frame_ids, cfg.data_path(cfg.calibration_file), stereo_hash)
         if not force and store.stage_done("temporal", stage_hash):
             return out
         centers_l = store.read_array("reference/points_left_image")
@@ -284,9 +341,29 @@ def run_temporal(cfg: ExperimentConfig, force: bool = False) -> Path:
         if centers_l.shape != centers_r.shape:
             raise ValueError("left/right reference point arrays have different shapes")
         n_points = centers_l.shape[0]
-        _ensure_temporal_datasets(
-            store, len(frame_ids), n_points, n_params, options.icgn.shape_order, cfg.dic.storage.save_params
+        same_run = (
+            (not force)
+            and (prog.attrs.get("temporal_run_hash") == stage_hash)
+            and ("dic/left/xy" in store.h5)
+            and (store.h5["dic/left/xy"].shape == (len(frame_ids), n_points, 2))
+            and ("progress/dic_frames_done" in store.h5)
+            and (store.h5["progress/dic_frames_done"].shape == (len(frame_ids), 2))
         )
+        reset = not same_run
+        _ensure_temporal_datasets(
+            store,
+            len(frame_ids),
+            n_points,
+            n_params,
+            options.icgn.shape_order,
+            cfg.dic.storage.save_params,
+            reset=reset,
+        )
+        if reset:
+            store.invalidate_stage("temporal")
+            store.invalidate_stage("reconstruct")
+            store.invalidate_stage("rbm")
+            prog.attrs["temporal_run_hash"] = stage_hash
         store.write_array("time/frame_ids", np.column_stack([frame_ids, frame_ids]))
 
         ts_l = sequence_timestamps(
@@ -309,16 +386,12 @@ def run_temporal(cfg: ExperimentConfig, force: bool = False) -> Path:
         store.write_array("time/sync_delta", sync.delta_seconds[frame_ids], units="s")
 
         done = store.h5["progress/dic_frames_done"]
-        if force:
-            done[...] = False
-            store.invalidate_stage("temporal")
 
         ref_index = int(cfg.reference_frame)
         ref_l = seq_l.read(ref_index, ROI.from_list(None))
         ref_r = seq_r.read(ref_index, ROI.from_list(None))
         tracker_l = TemporalTracker(ref_l, centers_l, options, backend)
         tracker_r = TemporalTracker(ref_r, centers_r, options, backend)
-        previous_row = -1
         previous_xy_l = None
         previous_xy_r = None
         previous_params_l = np.zeros((n_points, n_params), dtype=np.float64)
@@ -326,11 +399,14 @@ def run_temporal(cfg: ExperimentConfig, force: bool = False) -> Path:
 
         for row, frame_id in enumerate(frame_ids.tolist()):
             if bool(done[row, 0]) and bool(done[row, 1]):
-                previous_row = row
                 previous_xy_l = store.h5["dic/left/xy"][row]
                 previous_xy_r = store.h5["dic/right/xy"][row]
-                previous_params_l = _previous_params(store, "left", row, centers_l, n_params)
-                previous_params_r = _previous_params(store, "right", row, centers_r, n_params)
+                previous_params_l = _update_previous_from_store(
+                    store, "left", row, centers_l, previous_params_l, options.icgn.shape_order
+                )
+                previous_params_r = _update_previous_from_store(
+                    store, "right", row, centers_r, previous_params_r, options.icgn.shape_order
+                )
                 continue
 
             image_l = seq_l.read(frame_id)
@@ -355,11 +431,14 @@ def run_temporal(cfg: ExperimentConfig, force: bool = False) -> Path:
                     store.h5[f"dic/{side}/params"][row] = result.params
             store.h5["progress/dic_frames_done"][row] = [True, True]
             store.flush()
-            previous_row = row
             previous_xy_l = result_l.xy.copy()
             previous_xy_r = result_r.xy.copy()
-            previous_params_l = result_l.params.copy()
-            previous_params_r = result_r.params.copy()
+            good_l = result_l.status == Status.OK
+            if np.any(good_l):
+                previous_params_l[good_l] = result_l.params[good_l]
+            good_r = result_r.status == Status.OK
+            if np.any(good_r):
+                previous_params_r[good_r] = result_r.params[good_r]
 
         if bool(np.all(done[...])):
             store.mark_stage_done("temporal", stage_hash)
@@ -379,21 +458,37 @@ def run_reconstruct(cfg: ExperimentConfig, force: bool = False) -> Path:
         raise ValueError("experiment config needs output_file and calibration_file")
     out = cfg.results_path(cfg.output_file)
     calib = load_calibration(cfg.data_path(cfg.calibration_file))
+    origin_l = np.asarray(cfg.cameras.left.sensor_origin, dtype=np.float64)
+    origin_r = np.asarray(cfg.cameras.right.sensor_origin, dtype=np.float64)
     with ResultStore.open(out, "r+") as store:
         if "dic/left/xy" not in store.h5 or "dic/right/xy" not in store.h5:
             raise ValueError("temporal DIC datasets are missing; run --stage temporal first")
         xy_l = store.h5["dic/left/xy"]
         xy_r = store.h5["dic/right/xy"]
         T, N, _ = xy_l.shape
+        prog = store.h5.require_group("progress")
         stage_hash = config_hash(
             {
+                "stereo_hash": str(prog.attrs.get("stereo_config_hash", "")),
+                "temporal_hash": str(prog.attrs.get("temporal_config_hash", "")),
                 "stereo": cfg.dic.stereo.model_dump(mode="json"),
+                "recon": cfg.recon.model_dump(mode="json"),
+                "sensor_origins": [cfg.cameras.left.sensor_origin, cfg.cameras.right.sensor_origin],
                 "calibration_sha256": _file_sha256(cfg.data_path(cfg.calibration_file)),
                 "temporal_shape": list(xy_l.shape),
             }
         )
         if not force and store.stage_done("reconstruct", stage_hash):
             return out
+        same_run = (
+            (not force)
+            and (prog.attrs.get("reconstruct_run_hash") == stage_hash)
+            and ("reconstruction/xyz" in store.h5)
+            and (store.h5["reconstruction/xyz"].shape == (T, N, 3))
+            and ("progress/reconstruction_done" in store.h5)
+            and (store.h5["progress/reconstruction_done"].shape == (T,))
+        )
+        reset = not same_run
         for name, components, dtype in (
             ("reconstruction/xyz", 3, np.float64),
             ("reconstruction/displacement_raw", 3, np.float64),
@@ -402,17 +497,29 @@ def run_reconstruct(cfg: ExperimentConfig, force: bool = False) -> Path:
             ("reconstruction/status", None, np.uint8),
             ("quality/valid_mask", None, np.bool_),
         ):
-            if name not in store.h5:
-                store.create_timeseries(name, T, N, components, dtype=dtype, fill_value=False if dtype is np.bool_ else None)
+            _ensure_timeseries(
+                store,
+                name,
+                T,
+                N,
+                components,
+                dtype=dtype,
+                fill_value=False if dtype is np.bool_ else None,
+                reset=reset,
+            )
 
         X0 = store.read_array("reference/points_3d")
         frames = store.read_array("reference/local_frames")
-        done = store.h5.require_group("progress").get("reconstruction_done")
-        if done is None:
-            done = store.h5.create_dataset("progress/reconstruction_done", shape=(T,), dtype=np.bool_, fillvalue=False)
-        if force:
-            done[...] = False
+        done_name = "progress/reconstruction_done"
+        if done_name in store.h5 and (reset or store.h5[done_name].shape != (T,)):
+            del store.h5[done_name]
+        if done_name not in store.h5:
+            store.h5.create_dataset(done_name, shape=(T,), dtype=np.bool_, fillvalue=False)
+        done = store.h5[done_name]
+        if reset:
             store.invalidate_stage("reconstruct")
+            store.invalidate_stage("rbm")
+            prog.attrs["reconstruct_run_hash"] = stage_hash
 
         for k in range(T):
             if bool(done[k]):
@@ -422,8 +529,8 @@ def run_reconstruct(cfg: ExperimentConfig, force: bool = False) -> Path:
             dic_ok = np.all(np.isfinite(left), axis=1) & np.all(np.isfinite(right), axis=1)
             tri = triangulate(
                 calib,
-                np.where(dic_ok[:, None], left, np.nan),
-                np.where(dic_ok[:, None], right, np.nan),
+                np.where(dic_ok[:, None], left + origin_l, np.nan),
+                np.where(dic_ok[:, None], right + origin_r, np.nan),
                 max_reprojection_px=cfg.dic.stereo.max_reprojection_px,
             )
             status_l = store.h5["dic/left/status"][k]
@@ -432,6 +539,7 @@ def run_reconstruct(cfg: ExperimentConfig, force: bool = False) -> Path:
             both_ok = (status_l == Status.OK) & (status_r == Status.OK)
             status[both_ok] = tri.status[both_ok]
             bad_left = ~both_ok & (status_l != Status.OK)
+            status[bad_left] = status_l[bad_left]
             status[~bad_left & ~both_ok] = status_r[~bad_left & ~both_ok]
             valid = status == Status.OK
             xyz = np.full((N, 3), np.nan, dtype=np.float64)
@@ -468,26 +576,22 @@ def run_rbm(cfg: ExperimentConfig, force: bool = False) -> Path:
         reference = store.read_array("reference/points_3d")
         status = store.read_array("reconstruction/status")
         T, N, _ = xyz.shape
-        stage_hash = config_hash({"shape": list(xyz.shape), "reference": "reference/points_3d"})
+        prog = store.h5.require_group("progress")
+        stage_hash = config_hash(
+            {
+                "reconstruct_hash": str(prog.attrs.get("reconstruct_config_hash", "")),
+                "shape": list(xyz.shape),
+                "reference": "reference/points_3d",
+            }
+        )
         if not force and store.stage_done("rbm", stage_hash):
             return out
         compensation = compensate_trajectory(reference, xyz, valid_mask=status == 1)
-        for name, components, dtype in (
-            ("reconstruction/displacement_rbm", 3, np.float64),
-            ("reconstruction/rbm_R", 3, np.float64),
-            ("reconstruction/rbm_t", None, np.float64),
-            ("reconstruction/rbm_residual_rms", None, np.float64),
-            ("quality/rbm_valid", None, np.bool_),
-        ):
-            if name not in store.h5:
-                if name.endswith("rbm_R"):
-                    store.create_timeseries(name, T, 3, 3, dtype=dtype)
-                elif name.endswith("rbm_t"):
-                    store.create_timeseries(name, T, 3, dtype=dtype)
-                elif name.endswith("rbm_residual_rms") or name.endswith("rbm_valid"):
-                    store.create_timeseries(name, T, 1, dtype=dtype, fill_value=False if dtype is np.bool_ else None)
-                else:
-                    store.create_timeseries(name, T, N, components, dtype=dtype)
+        _ensure_timeseries(store, "reconstruction/displacement_rbm", T, N, 3, dtype=np.float64, reset=True)
+        _ensure_timeseries(store, "reconstruction/rbm_R", T, 3, 3, dtype=np.float64, reset=True)
+        _ensure_timeseries(store, "reconstruction/rbm_t", T, 3, dtype=np.float64, reset=True)
+        _ensure_timeseries(store, "reconstruction/rbm_residual_rms", T, 1, dtype=np.float64, reset=True)
+        _ensure_timeseries(store, "quality/rbm_valid", T, 1, dtype=np.bool_, fill_value=False, reset=True)
         store.h5["reconstruction/displacement_rbm"][:] = compensation.displacement
         store.h5["reconstruction/rbm_R"][:] = compensation.rotations
         store.h5["reconstruction/rbm_t"][:] = compensation.translations

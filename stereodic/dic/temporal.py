@@ -96,7 +96,7 @@ class TemporalTracker:
             p0 = self._zero
         result = self.solver.solve(self.refs, target, p0)
 
-        high = (result.status == Status.OK) & (result.znssd > self.options.max_znssd)
+        high = (result.status == Status.OK) & ~(result.znssd <= self.options.max_znssd)
         result.status[high] = Status.HIGH_RESIDUAL
         result.xy[result.status != Status.OK] = np.nan
         result.params[result.status != Status.OK] = np.nan

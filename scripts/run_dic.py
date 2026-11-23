@@ -49,11 +49,20 @@ def main() -> None:
             st = store.read_array("quality/rbm_valid")
             rep = store.read_array("reconstruction/rbm_residual_rms")
     print(f"written: {out}")
-    print(f"status: {status_counts(st)}")
-    if rep is not None:
-        ok = st == 1
-        if ok.any():
-            print(f"reprojection error [px]: median {np.nanmedian(rep[ok]):.4f}, P99 {np.nanpercentile(rep[ok], 99):.4f}")
+    if args.stage == "rbm":
+        valid = np.asarray(st, dtype=bool).ravel()
+        print(f"valid frames: {int(valid.sum())}/{valid.size}")
+        if valid.any():
+            rms = np.asarray(rep, dtype=np.float64).ravel()[valid]
+            print(f"RBM residual RMS [mm]: median {np.nanmedian(rms):.6f}, P99 {np.nanpercentile(rms, 99):.6f}")
+    else:
+        print(f"status: {status_counts(st)}")
+        if rep is not None:
+            ok = st == 1
+            if ok.any():
+                print(
+                    f"reprojection error [px]: median {np.nanmedian(rep[ok]):.4f}, P99 {np.nanpercentile(rep[ok], 99):.4f}"
+                )
 
 
 if __name__ == "__main__":
