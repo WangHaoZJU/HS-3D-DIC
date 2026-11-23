@@ -79,36 +79,49 @@ def _compose_inverse_order1(cp, p, dp):
     return cp.column_stack([ntx, na - 1.0, nb, nty, nc, nd - 1.0])
 
 
-def solve_cuda(
-    refs: ReferenceSubsets, target: BSplineImage, p0: np.ndarray, indices: np.ndarray | None = None
-) -> DICBatchResult:
-    """Solve selected POIs on a CUDA device using CuPy."""
-    try:
-        import cupy as cp
-    except Exception as exc:  # pragma: no cover - availability is checked by backend selection
-        raise RuntimeError(f"CUDA backend requires CuPy: {exc}") from exc
+_CUDA_CHUNK = 1024  # POIs per vectorized GPU batch to bound temporary memory
 
+
+def _to_host(cp, arr) -> np.ndarray:
+    return cp.asnumpy(arr) if hasattr(cp, "asnumpy") else np.asarray(arr)
+
+
+def _any_true(cp, mask) -> bool:
+    val = cp.any(mask)
+    return bool(val.get()) if hasattr(val, "get") else bool(val)
+
+
+def _safe_coords(cp, x, y, width: int, height: int):
+    sx = cp.where(cp.isfinite(x), cp.clip(x, 0.0, float(width - 1)), 0.0)
+    sy = cp.where(cp.isfinite(y), cp.clip(y, 0.0, float(height - 1)), 0.0)
+    return sx, sy
+
+
+def _solve_chunk(
+    cp,
+    refs: ReferenceSubsets,
+    target: BSplineImage,
+    coeff,
+    dx,
+    dy,
+    idx: np.ndarray,
+    p0_np: np.ndarray,
+    out: DICBatchResult,
+    offset: int,
+) -> None:
     opt = refs.options
     order = opt.shape_order
-    if order not in (0, 1):
-        raise NotImplementedError("CUDA IC-GN currently supports temporal orders 0 and 1")
-    idx, p0_np = _check_indices(refs, p0, indices)
-    n, q = idx.size, refs.dx.size
-    out = DICBatchResult.empty(n, n_params=sf.n_params(order))
-    if n == 0:
-        return out
+    n = idx.size
+    centers = cp.asarray(refs.centers[idx], dtype=cp.float64)
+    f_tilde = cp.asarray(refs.f_tilde[idx], dtype=cp.float64)
+    f_norm = cp.asarray(refs.f_norm[idx], dtype=cp.float64)
+    J = cp.asarray(refs.J[idx], dtype=cp.float64)
+    H_inv = cp.asarray(refs.H_inv[idx], dtype=cp.float64)
+    p = cp.asarray(p0_np.copy(), dtype=cp.float64)
 
-    centers = cp.asarray(refs.centers[idx])
-    dx = cp.asarray(refs.dx)
-    dy = cp.asarray(refs.dy)
-    f_tilde = cp.asarray(refs.f_tilde[idx])
-    f_norm = cp.asarray(refs.f_norm[idx])
-    J = cp.asarray(refs.J[idx])
-    H_inv = cp.asarray(refs.H_inv[idx])
-    p = cp.asarray(p0_np.copy())
-    coeff = cp.asarray(target.coeffs)
-    status = cp.asarray(refs.status[idx].astype(np.uint8))
-    active = status == int(Status.OK)
+    ref_status = cp.asarray(refs.status[idx].astype(np.uint8))
+    active = ref_status == int(Status.OK)
+    status = cp.where(active, int(Status.NOT_CONVERGED), ref_status)
     out_xy = cp.full((n, 2), cp.nan, dtype=cp.float64)
     out_params = cp.full((n, sf.n_params(order)), cp.nan, dtype=cp.float64)
     out_znssd = cp.full(n, cp.nan, dtype=cp.float64)
@@ -116,28 +129,37 @@ def solve_cuda(
     lo_x, lo_y = float(target.border), float(target.border)
     hi_x, hi_y = float(target.width - 1 - target.border), float(target.height - 1 - target.border)
 
+    h = float(opt.half_size)
+    cx = cp.asarray([-h, h, -h, h], dtype=cp.float64)
+    cy = cp.asarray([-h, -h, h, h], dtype=cp.float64)
+    zeros_c = cp.zeros((n, 2), dtype=cp.float64)
+
     for iteration in range(1, opt.max_iterations + 1):
-        if not bool(cp.any(active).get()):
+        if not _any_true(cp, active):
             break
+        out_iter = cp.where(active, iteration, out_iter)
         x, y = _warp(cp, centers, dx, dy, p, order)
-        inside = cp.all((x >= lo_x) & (x <= hi_x) & (y >= lo_y) & (y <= hi_y), axis=1)
+        inside = cp.all(
+            cp.isfinite(x) & cp.isfinite(y) & (x >= lo_x) & (x <= hi_x) & (y >= lo_y) & (y <= hi_y),
+            axis=1,
+        )
         oob = active & ~inside
         status = cp.where(oob, int(Status.OUT_OF_BOUNDS), status)
         active &= inside
-        if not bool(cp.any(active).get()):
+        if not _any_true(cp, active):
             break
-        # Inactive rows may already be out of bounds. Clip them for the
-        # harmless vectorized sample while their status prevents any update.
-        g = _sample(cp, coeff, target, cp.clip(x, 0.0, target.width - 1.0), cp.clip(y, 0.0, target.height - 1.0))
+        sx, sy = _safe_coords(cp, x, y, target.width, target.height)
+        g = _sample(cp, coeff, target, sx, sy)
         gm = cp.mean(g, axis=1)
         gt = g - gm[:, None]
         gn = cp.sqrt(cp.sum(gt * gt, axis=1))
-        low = active & (gn <= 0.0)
+        low = active & ~(gn > 0.0)
         status = cp.where(low, int(Status.LOW_TEXTURE), status)
         active &= ~low
-        if not bool(cp.any(active).get()):
+        if not _any_true(cp, active):
             break
-        ratio = f_norm / gn
+        safe_gn = cp.where(gn > 0.0, gn, 1.0)
+        ratio = f_norm / safe_gn
         e = f_tilde - ratio[:, None] * gt
         b = cp.einsum("nqp,nq->np", J, e)
         dp = -cp.einsum("npq,nq->np", H_inv, b)
@@ -146,42 +168,86 @@ def solve_cuda(
             motion = cp.sqrt(dp[:, 0] ** 2 + dp[:, 1] ** 2)
         else:
             det = (1.0 + dp[:, 1]) * (1.0 + dp[:, 5]) - dp[:, 2] * dp[:, 4]
-            bad = active & (cp.abs(det) <= 1e-15)
+            bad = active & (~cp.isfinite(det) | (cp.abs(det) <= 1e-15))
             status = cp.where(bad, int(Status.ILL_CONDITIONED), status)
             active &= ~bad
             safe_dp = cp.where(active[:, None], dp, 0.0)
             p_next = _compose_inverse_order1(cp, p, safe_dp)
-            h = float(opt.half_size)
-            cx = cp.asarray([-h, h, -h, h])
-            cy = cp.asarray([-h, -h, h, h])
-            wx, wy = _warp(cp, cp.zeros((n, 2)), cx, cy, safe_dp, order)
+            wx, wy = _warp(cp, zeros_c, cx, cy, safe_dp, order)
             motion = cp.max(cp.sqrt((wx - cx[None, :]) ** 2 + (wy - cy[None, :]) ** 2), axis=1)
         p = cp.where(active[:, None], p_next, p)
-        out_iter = cp.where(active, iteration, out_iter)
         converged = active & (motion < opt.convergence_threshold_px)
         status = cp.where(converged, int(Status.OK), status)
         active &= ~converged
 
-    final = (status == int(Status.OK)) | (status == int(Status.NOT_CONVERGED))
-    if bool(cp.any(final).get()):
+    candidate = (status == int(Status.OK)) | (status == int(Status.NOT_CONVERGED))
+    if _any_true(cp, candidate):
         x, y = _warp(cp, centers, dx, dy, p, order)
-        inside = cp.all((x >= lo_x) & (x <= hi_x) & (y >= lo_y) & (y <= hi_y), axis=1)
-        final &= inside
-        g = _sample(cp, coeff, target, cp.clip(x, 0.0, target.width - 1.0), cp.clip(y, 0.0, target.height - 1.0))
+        inside = cp.all(
+            cp.isfinite(x) & cp.isfinite(y) & (x >= lo_x) & (x <= hi_x) & (y >= lo_y) & (y <= hi_y),
+            axis=1,
+        )
+        final = candidate & inside
+        status = cp.where(candidate & ~inside, int(Status.OUT_OF_BOUNDS), status)
+        sx, sy = _safe_coords(cp, x, y, target.width, target.height)
+        g = _sample(cp, coeff, target, sx, sy)
         gm = cp.mean(g, axis=1)
         gt = g - gm[:, None]
         gn = cp.sqrt(cp.sum(gt * gt, axis=1))
-        out_znssd = cp.where(final, cp.sum((f_tilde / f_norm[:, None] - gt / gn[:, None]) ** 2, axis=1), out_znssd)
+        znssd_ok = final & (gn > 0.0) & (f_norm > 0.0)
+        safe_gn = cp.where(znssd_ok, gn, 1.0)
+        safe_fn = cp.where(znssd_ok, f_norm, 1.0)
+        out_znssd = cp.where(
+            znssd_ok,
+            cp.sum((f_tilde / safe_fn[:, None] - gt / safe_gn[:, None]) ** 2, axis=1),
+            out_znssd,
+        )
         if order == 0:
             out_xy = cp.where(final[:, None], centers + p[:, :2], out_xy)
         else:
             out_xy = cp.where(final[:, None], centers + p[:, [0, 3]], out_xy)
         out_params = cp.where(final[:, None], p, out_params)
-        status = cp.where(~inside & ((status == int(Status.OK)) | (status == int(Status.NOT_CONVERGED))), int(Status.OUT_OF_BOUNDS), status)
 
-    out.xy[:] = cp.asnumpy(out_xy)
-    out.params[:] = cp.asnumpy(out_params)
-    out.znssd[:] = cp.asnumpy(out_znssd).astype(np.float32)
-    out.iterations[:] = cp.asnumpy(out_iter)
-    out.status[:] = cp.asnumpy(status).astype(np.uint8)
+    sl = slice(offset, offset + n)
+    out.xy[sl] = _to_host(cp, out_xy)
+    out.params[sl] = _to_host(cp, out_params)
+    out.znssd[sl] = _to_host(cp, out_znssd).astype(np.float32)
+    out.iterations[sl] = _to_host(cp, out_iter)
+    out.status[sl] = _to_host(cp, status).astype(np.uint8)
+
+
+def _solve_with_xp(
+    cp,
+    refs: ReferenceSubsets,
+    target: BSplineImage,
+    p0: np.ndarray,
+    indices: np.ndarray | None = None,
+    chunk_size: int = _CUDA_CHUNK,
+) -> DICBatchResult:
+    opt = refs.options
+    order = opt.shape_order
+    if order not in (0, 1):
+        raise NotImplementedError("CUDA IC-GN currently supports temporal orders 0 and 1")
+    idx, p0_np = _check_indices(refs, p0, indices)
+    n = idx.size
+    out = DICBatchResult.empty(n, n_params=sf.n_params(order))
+    if n == 0:
+        return out
+    coeff = cp.asarray(target.coeffs, dtype=cp.float64)
+    dx = cp.asarray(refs.dx, dtype=cp.float64)
+    dy = cp.asarray(refs.dy, dtype=cp.float64)
+    for start in range(0, n, max(1, int(chunk_size))):
+        stop = min(start + max(1, int(chunk_size)), n)
+        _solve_chunk(cp, refs, target, coeff, dx, dy, idx[start:stop], p0_np[start:stop], out, start)
     return out
+
+
+def solve_cuda(
+    refs: ReferenceSubsets, target: BSplineImage, p0: np.ndarray, indices: np.ndarray | None = None
+) -> DICBatchResult:
+    """Solve selected POIs on a CUDA device using CuPy."""
+    try:
+        import cupy as cp
+    except Exception as exc:  # pragma: no cover - availability is checked by backend selection
+        raise RuntimeError(f"CUDA backend requires CuPy: {exc}") from exc
+    return _solve_with_xp(cp, refs, target, p0, indices)
