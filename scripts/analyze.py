@@ -38,12 +38,20 @@ def main() -> None:
         if "reconstruction/displacement_local" not in store.h5:
             raise ValueError("reconstruction data is missing; run --stage reconstruct first")
         timestamps = store.read_array("time/timestamps")
-        source_name = "reconstruction/displacement_local"
         if args.use_rbm:
-            if "reconstruction/displacement_rbm" not in store.h5:
+            if "reconstruction/displacement_rbm_local" in store.h5:
+                displacement_all = store.read_array("reconstruction/displacement_rbm_local")
+            elif "reconstruction/displacement_rbm" in store.h5:
+                from stereodic.recon.frames import to_local
+
+                displacement_all = to_local(
+                    store.read_array("reference/local_frames"),
+                    store.read_array("reconstruction/displacement_rbm"),
+                )
+            else:
                 raise ValueError("RBM displacement is missing; run --stage rbm first")
-            source_name = "reconstruction/displacement_rbm"
-        displacement_all = store.read_array(source_name)
+        else:
+            displacement_all = store.read_array("reconstruction/displacement_local")
         displacement = displacement_all[:, :, args.direction]
         # A robust aggregate trace keeps the frequency stage independent of a
         # selected single POI while preserving the per-point data in HDF5.

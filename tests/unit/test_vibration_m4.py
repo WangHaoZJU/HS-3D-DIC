@@ -85,3 +85,16 @@ def test_rigid_motion_estimation_and_compensation():
     compensated = compensate_trajectory(reference, trajectory)
     np.testing.assert_allclose(compensated.displacement, 0.0, atol=1e-12)
     assert compensated.valid.all()
+
+    # With a fixture reference_mask, elastic motion of non-reference blade points is preserved.
+    elastic = np.zeros_like(reference)
+    elastic[3:, 2] = 0.25  # elastic out-of-plane deflection on blade tip points
+    deformed = (reference + elastic) @ R.T + translation
+    ref_mask = np.array([True, True, True, False, False])
+    comp_masked = compensate_trajectory(reference, np.stack([reference, deformed]), reference_mask=ref_mask)
+    assert comp_masked.valid.all()
+    np.testing.assert_allclose(comp_masked.displacement[1], elastic, atol=1e-12)
+
+    # Collinear reference points cannot uniquely determine 3D rotation.
+    collinear = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]])
+    assert not estimate_rigid_motion(collinear, collinear).valid

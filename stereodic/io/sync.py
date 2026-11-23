@@ -63,16 +63,26 @@ def validate_timestamps(values: np.ndarray, name: str = "timestamps") -> None:
         raise ValueError(f"{name}: timestamps must be strictly increasing")
 
 
+def _nearest_indices(src: np.ndarray, dst: np.ndarray) -> np.ndarray:
+    """For each timestamp in sorted `src`, index of the nearest timestamp in sorted `dst`."""
+    pos = np.searchsorted(dst, src, side="left")
+    pos_right = np.clip(pos, 0, dst.size - 1)
+    pos_left = np.clip(pos - 1, 0, dst.size - 1)
+    d_left = np.abs(src - dst[pos_left])
+    d_right = np.abs(dst[pos_right] - src)
+    return np.where(d_left <= d_right, pos_left, pos_right).astype(np.int64)
+
+
 def pair_timestamps(
     left_timestamps: np.ndarray,
     right_timestamps: np.ndarray,
     max_delta_seconds: float | None = None,
 ) -> SyncReport:
-    """Pair each left frame with the nearest right frame without reuse.
+    """Pair left and right frames by mutual-nearest timestamp without reuse.
 
-    The common hardware-triggered case has equal-length arrays and returns
-    index-aligned pairs. For unequal or jittered arrays, a monotonic nearest
-    pairing is used and frames that cannot be paired are omitted.
+    Using mutual nearest neighbors in time preserves strict monotonicity,
+    handles independent dropped frames even when both sequences have equal
+    length, and avoids greedy index shifts when one stream starts earlier.
     """
     left = np.asarray(left_timestamps, dtype=np.float64).reshape(-1)
     right = np.asarray(right_timestamps, dtype=np.float64).reshape(-1)
@@ -81,26 +91,14 @@ def pair_timestamps(
     if max_delta_seconds is not None and max_delta_seconds < 0:
         raise ValueError("max_delta_seconds must be non-negative")
 
-    if left.size == right.size:
-        li = np.arange(left.size, dtype=np.int64)
-        ri = np.arange(right.size, dtype=np.int64)
-    else:
-        li_list: list[int] = []
-        ri_list: list[int] = []
-        next_right = 0
-        for i, t in enumerate(left):
-            if next_right >= right.size:
-                break
-            j = next_right + int(np.argmin(np.abs(right[next_right:] - t)))
-            if max_delta_seconds is None or abs(right[j] - t) <= max_delta_seconds:
-                li_list.append(i)
-                ri_list.append(j)
-                next_right = j + 1
-        li = np.asarray(li_list, dtype=np.int64)
-        ri = np.asarray(ri_list, dtype=np.int64)
-
+    l_to_r = _nearest_indices(left, right)
+    r_to_l = _nearest_indices(right, left)
+    idx_l = np.arange(left.size, dtype=np.int64)
+    mutual = r_to_l[l_to_r] == idx_l
+    li = idx_l[mutual]
+    ri = l_to_r[mutual]
     delta = right[ri] - left[li]
-    if max_delta_seconds is not None and np.any(np.abs(delta) > max_delta_seconds):
+    if max_delta_seconds is not None:
         keep = np.abs(delta) <= max_delta_seconds
         li, ri, delta = li[keep], ri[keep], delta[keep]
     return SyncReport(li, ri, left[li], right[ri], delta)

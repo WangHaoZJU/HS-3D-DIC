@@ -35,15 +35,22 @@ def run_calibration(cfg: ExperimentConfig, plot: bool = True):
     seq_r = open_sequence(cfg.data_path(cc.right.path), cc.right.pattern)
     if len(seq_l) != len(seq_r):
         raise ValueError(f"calibration views: {len(seq_l)} left vs {len(seq_r)} right images")
-    origin = np.asarray(cc.roi_origin, dtype=np.float64)
-    h, w = seq_l.frame_shape
-    sensor = tuple(cc.sensor_size) if cc.sensor_size else (w + int(origin[0]), h + int(origin[1]))
+    origin_l = np.asarray(
+        cc.left.sensor_origin if cc.left.sensor_origin != [0, 0] else cc.roi_origin, dtype=np.float64
+    )
+    origin_r = np.asarray(
+        cc.right.sensor_origin if cc.right.sensor_origin != [0, 0] else cc.roi_origin, dtype=np.float64
+    )
+    hl, wl = seq_l.frame_shape
+    hr, wr = seq_r.frame_shape
+    sensor_l = tuple(cc.sensor_size) if cc.sensor_size else (wl + int(origin_l[0]), hl + int(origin_l[1]))
+    sensor_r = tuple(cc.sensor_size) if cc.sensor_size else (wr + int(origin_r[0]), hr + int(origin_r[1]))
 
     dets = {"left": [], "right": []}
     names = []
     for i in range(len(seq_l)):
         names.append((seq_l.frame_name(i), seq_r.frame_name(i)))
-        for side, seq in (("left", seq_l), ("right", seq_r)):
+        for side, seq, origin in (("left", seq_l, origin_l), ("right", seq_r, origin_r)):
             d = detect_charuco(seq.read(i), spec, min_corners=cc.min_corners)
             if d is not None:
                 d.image_points = d.image_points + origin
@@ -56,11 +63,12 @@ def run_calibration(cfg: ExperimentConfig, plot: bool = True):
         min_views=cc.min_views,
         min_common_corners=cc.min_corners,
     )
-    result = calibrate_stereo(dets["left"], dets["right"], sensor, sensor, opts)
+    result = calibrate_stereo(dets["left"], dets["right"], sensor_l, sensor_r, opts)
     out = cfg.data_path(cfg.calibration_file)
     save_calibration(
         out,
         result,
+        roi_origin=(int(origin_l[0]), int(origin_l[1])),
         extra={
             "views": [list(n) for n in names],
             "board": cc.board.model_dump(),
@@ -92,22 +100,25 @@ def _read_reference(cfg: ExperimentConfig):
     return seq_l.read(i), seq_r.read(i), seq_l.frame_name(i), seq_r.frame_name(i)
 
 
-def _poi_mask(cfg: ExperimentConfig, shape: tuple[int, int]) -> np.ndarray | None:
-    if cfg.poi_mask is None:
-        return None
-    import tifffile
+def _read_mask_image(path: Path, shape: tuple[int, int] | None, label: str) -> np.ndarray:
     import cv2
+    import tifffile
 
-    p = cfg.data_path(cfg.poi_mask)
-    m = tifffile.imread(p) if p.suffix.lower() in (".tif", ".tiff") else cv2.imread(str(p), cv2.IMREAD_UNCHANGED)
+    m = tifffile.imread(path) if path.suffix.lower() in (".tif", ".tiff") else cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
     if m is None:
-        raise ValueError(f"cannot read poi_mask {p}")
+        raise ValueError(f"cannot read {label} {path}")
     m = np.asarray(m)
     if m.ndim == 3:
         m = m.max(axis=2)
-    if m.shape != shape:
-        raise ValueError(f"poi_mask shape {m.shape} differs from the image shape {shape}")
+    if shape is not None and m.shape != shape:
+        raise ValueError(f"{label} shape {m.shape} differs from the image shape {shape}")
     return m > 0
+
+
+def _poi_mask(cfg: ExperimentConfig, shape: tuple[int, int]) -> np.ndarray | None:
+    if cfg.poi_mask is None:
+        return None
+    return _read_mask_image(cfg.data_path(cfg.poi_mask), shape, "poi_mask")
 
 
 def run_stereo(cfg: ExperimentConfig, force: bool = False) -> Path:
@@ -374,7 +385,10 @@ def run_temporal(cfg: ExperimentConfig, force: bool = False) -> Path:
             len(seq_r), cfg.cameras.frame_rate_hz,
             cfg.data_path(cfg.cameras.right.timestamp_path) if cfg.cameras.right.timestamp_path else None,
         )
-        sync = pair_timestamps(ts_l, ts_r)
+        max_delta_s = (
+            None if cfg.cameras.max_sync_delta_us is None else float(cfg.cameras.max_sync_delta_us) * 1e-6
+        )
+        sync = pair_timestamps(ts_l, ts_r, max_delta_seconds=max_delta_s)
         if not (
             np.array_equal(sync.left_indices, np.arange(len(seq_l)))
             and np.array_equal(sync.right_indices, np.arange(len(seq_r)))
@@ -561,19 +575,37 @@ def run_reconstruct(cfg: ExperimentConfig, force: bool = False) -> Path:
     return out
 
 
+def _rbm_poi_mask(cfg: ExperimentConfig, xy_left_image: np.ndarray) -> np.ndarray | None:
+    if cfg.rbm_mask is None:
+        return None
+    mask_img = _read_mask_image(cfg.data_path(cfg.rbm_mask), None, "rbm_mask")
+    h, w = mask_img.shape
+    xy = np.asarray(xy_left_image, dtype=np.float64).reshape(-1, 2)
+    ix = np.rint(xy[:, 0]).astype(np.int64)
+    iy = np.rint(xy[:, 1]).astype(np.int64)
+    inside = np.all(np.isfinite(xy), axis=1) & (ix >= 0) & (ix < w) & (iy >= 0) & (iy < h)
+    out = np.zeros(len(xy), dtype=bool)
+    out[inside] = mask_img[iy[inside], ix[inside]]
+    return out
+
+
 def run_rbm(cfg: ExperimentConfig, force: bool = False) -> Path:
     """Estimate and remove frame-wise rigid motion from reconstructed points."""
+    from .core.status import Status
     from .io.storage import ResultStore
+    from .recon.frames import to_local
     from .recon.rbm import compensate_trajectory
 
     if cfg.output_file is None:
         raise ValueError("experiment config has no output_file")
     out = cfg.results_path(cfg.output_file)
+    rbm_mask_sha = _file_sha256(cfg.data_path(cfg.rbm_mask)) if cfg.rbm_mask is not None else ""
     with ResultStore.open(out, "r+") as store:
         if "reconstruction/xyz" not in store.h5 or "reference/points_3d" not in store.h5:
             raise ValueError("reconstruction data is missing; run --stage reconstruct first")
         xyz = store.read_array("reconstruction/xyz")
         reference = store.read_array("reference/points_3d")
+        frames = store.read_array("reference/local_frames")
         status = store.read_array("reconstruction/status")
         T, N, _ = xyz.shape
         prog = store.h5.require_group("progress")
@@ -582,20 +614,34 @@ def run_rbm(cfg: ExperimentConfig, force: bool = False) -> Path:
                 "reconstruct_hash": str(prog.attrs.get("reconstruct_config_hash", "")),
                 "shape": list(xyz.shape),
                 "reference": "reference/points_3d",
+                "rbm_mask": str(cfg.rbm_mask),
+                "rbm_mask_sha256": rbm_mask_sha,
             }
         )
         if not force and store.stage_done("rbm", stage_hash):
             return out
-        compensation = compensate_trajectory(reference, xyz, valid_mask=status == 1)
+        ref_mask: np.ndarray | None = None
+        if cfg.rbm_mask is not None:
+            ref_mask = _rbm_poi_mask(cfg, store.read_array("reference/points_left_image"))
+            if ref_mask is None or int(ref_mask.sum()) < 3:
+                raise ValueError(f"rbm_mask selects fewer than 3 POIs ({0 if ref_mask is None else int(ref_mask.sum())})")
+        else:
+            log.warning("rbm_mask is not configured; fitting rigid-body motion on all valid POIs")
+        compensation = compensate_trajectory(reference, xyz, valid_mask=status == Status.OK, reference_mask=ref_mask)
+        disp_local = to_local(frames, compensation.displacement)
         _ensure_timeseries(store, "reconstruction/displacement_rbm", T, N, 3, dtype=np.float64, reset=True)
+        _ensure_timeseries(store, "reconstruction/displacement_rbm_local", T, N, 3, dtype=np.float64, reset=True)
         _ensure_timeseries(store, "reconstruction/rbm_R", T, 3, 3, dtype=np.float64, reset=True)
         _ensure_timeseries(store, "reconstruction/rbm_t", T, 3, dtype=np.float64, reset=True)
         _ensure_timeseries(store, "reconstruction/rbm_residual_rms", T, 1, dtype=np.float64, reset=True)
         _ensure_timeseries(store, "quality/rbm_valid", T, 1, dtype=np.bool_, fill_value=False, reset=True)
         store.h5["reconstruction/displacement_rbm"][:] = compensation.displacement
+        store.h5["reconstruction/displacement_rbm_local"][:] = disp_local
         store.h5["reconstruction/rbm_R"][:] = compensation.rotations
         store.h5["reconstruction/rbm_t"][:] = compensation.translations
         store.h5["reconstruction/rbm_residual_rms"][:, 0] = compensation.residual_rms
         store.h5["quality/rbm_valid"][:, 0] = compensation.valid
+        if ref_mask is not None:
+            store.write_array("quality/rbm_reference_mask", ref_mask)
         store.mark_stage_done("rbm", stage_hash)
     return out

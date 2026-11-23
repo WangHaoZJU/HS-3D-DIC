@@ -99,6 +99,7 @@ class CamerasConfig(_Strict):
     left: CameraSource
     right: CameraSource
     frame_rate_hz: float = Field(gt=0)
+    max_sync_delta_us: float | None = Field(default=None, ge=0)
 
 
 class CharucoConfig(_Strict):
@@ -147,6 +148,7 @@ class ExperimentConfig(_Strict):
     cameras: CamerasConfig
     roi: list[int] | None = None  # POI region in left-image coordinates [x0, y0, width, height]
     poi_mask: Path | None = None  # optional image (same size as left frames), nonzero = measure here
+    rbm_mask: Path | None = None  # optional image (same size as left frames), nonzero = rigid-body reference zone
     frames: FramesConfig = FramesConfig()
     reference_frame: int = Field(0, ge=0)
     calibration_file: Path | None = None

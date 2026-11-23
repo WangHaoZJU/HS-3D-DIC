@@ -54,6 +54,10 @@ def test_temporal_and_reconstruction_pipeline(tmp_path: Path):
         assert np.all(recon_status == Status.OK)
         assert np.isfinite(store.read_array("reconstruction/displacement_raw")).all()
         assert store.read_array("reconstruction/displacement_rbm").shape == store.read_array("reconstruction/displacement_raw").shape
+        assert (
+            store.read_array("reconstruction/displacement_rbm_local").shape
+            == store.read_array("reconstruction/displacement_local").shape
+        )
 
     # A second invocation uses the completion markers and leaves the result intact.
         before = store.read_array("reconstruction/displacement_raw")
