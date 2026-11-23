@@ -411,6 +411,18 @@ def run_temporal(cfg: ExperimentConfig, force: bool = False) -> Path:
         previous_params_l = np.zeros((n_points, n_params), dtype=np.float64)
         previous_params_r = np.zeros((n_points, n_params), dtype=np.float64)
 
+        batch_size = max(1, int(cfg.dic.temporal.frame_batch))
+        pending_rows: list[int] = []
+
+        def _flush_pending() -> None:
+            if not pending_rows:
+                return
+            store.flush()
+            for r in pending_rows:
+                done[r] = [True, True]
+            store.flush()
+            pending_rows.clear()
+
         for row, frame_id in enumerate(frame_ids.tolist()):
             if bool(done[row, 0]) and bool(done[row, 1]):
                 previous_xy_l = store.h5["dic/left/xy"][row]
@@ -443,8 +455,9 @@ def run_temporal(cfg: ExperimentConfig, force: bool = False) -> Path:
                 store.h5[f"dic/{side}/status"][row] = result.status
                 if cfg.dic.storage.save_params:
                     store.h5[f"dic/{side}/params"][row] = result.params
-            store.h5["progress/dic_frames_done"][row] = [True, True]
-            store.flush()
+            pending_rows.append(row)
+            if len(pending_rows) >= batch_size:
+                _flush_pending()
             previous_xy_l = result_l.xy.copy()
             previous_xy_r = result_r.xy.copy()
             good_l = result_l.status == Status.OK
@@ -454,6 +467,7 @@ def run_temporal(cfg: ExperimentConfig, force: bool = False) -> Path:
             if np.any(good_r):
                 previous_params_r[good_r] = result_r.params[good_r]
 
+        _flush_pending()
         if bool(np.all(done[...])):
             store.mark_stage_done("temporal", stage_hash)
     return out
