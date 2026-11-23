@@ -451,3 +451,47 @@ def run_reconstruct(cfg: ExperimentConfig, force: bool = False) -> Path:
         if bool(np.all(done[...])):
             store.mark_stage_done("reconstruct", stage_hash)
     return out
+
+
+def run_rbm(cfg: ExperimentConfig, force: bool = False) -> Path:
+    """Estimate and remove frame-wise rigid motion from reconstructed points."""
+    from .io.storage import ResultStore
+    from .recon.rbm import compensate_trajectory
+
+    if cfg.output_file is None:
+        raise ValueError("experiment config has no output_file")
+    out = cfg.results_path(cfg.output_file)
+    with ResultStore.open(out, "r+") as store:
+        if "reconstruction/xyz" not in store.h5 or "reference/points_3d" not in store.h5:
+            raise ValueError("reconstruction data is missing; run --stage reconstruct first")
+        xyz = store.read_array("reconstruction/xyz")
+        reference = store.read_array("reference/points_3d")
+        status = store.read_array("reconstruction/status")
+        T, N, _ = xyz.shape
+        stage_hash = config_hash({"shape": list(xyz.shape), "reference": "reference/points_3d"})
+        if not force and store.stage_done("rbm", stage_hash):
+            return out
+        compensation = compensate_trajectory(reference, xyz, valid_mask=status == 1)
+        for name, components, dtype in (
+            ("reconstruction/displacement_rbm", 3, np.float64),
+            ("reconstruction/rbm_R", 3, np.float64),
+            ("reconstruction/rbm_t", None, np.float64),
+            ("reconstruction/rbm_residual_rms", None, np.float64),
+            ("quality/rbm_valid", None, np.bool_),
+        ):
+            if name not in store.h5:
+                if name.endswith("rbm_R"):
+                    store.create_timeseries(name, T, 3, 3, dtype=dtype)
+                elif name.endswith("rbm_t"):
+                    store.create_timeseries(name, T, 3, dtype=dtype)
+                elif name.endswith("rbm_residual_rms") or name.endswith("rbm_valid"):
+                    store.create_timeseries(name, T, 1, dtype=dtype, fill_value=False if dtype is np.bool_ else None)
+                else:
+                    store.create_timeseries(name, T, N, components, dtype=dtype)
+        store.h5["reconstruction/displacement_rbm"][:] = compensation.displacement
+        store.h5["reconstruction/rbm_R"][:] = compensation.rotations
+        store.h5["reconstruction/rbm_t"][:] = compensation.translations
+        store.h5["reconstruction/rbm_residual_rms"][:, 0] = compensation.residual_rms
+        store.h5["quality/rbm_valid"][:, 0] = compensation.valid
+        store.mark_stage_done("rbm", stage_hash)
+    return out

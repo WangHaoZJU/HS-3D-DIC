@@ -15,13 +15,13 @@ import numpy as np
 from stereodic.core.config import load_experiment
 from stereodic.core.status import status_counts
 from stereodic.io.storage import ResultStore
-from stereodic.pipeline import run_reconstruct, run_stereo, run_temporal
+from stereodic.pipeline import run_rbm, run_reconstruct, run_stereo, run_temporal
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--config", required=True)
-    ap.add_argument("--stage", required=True, choices=["stereo", "temporal", "reconstruct"])
+    ap.add_argument("--stage", required=True, choices=["stereo", "temporal", "reconstruct", "rbm"])
     ap.add_argument("--force", action="store_true", help="recompute even if the stage is up to date")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args()
@@ -31,8 +31,10 @@ def main() -> None:
         out = run_stereo(cfg, force=args.force)
     elif args.stage == "temporal":
         out = run_temporal(cfg, force=args.force)
-    else:
+    elif args.stage == "reconstruct":
         out = run_reconstruct(cfg, force=args.force)
+    else:
+        out = run_rbm(cfg, force=args.force)
     with ResultStore.open(out, "r") as store:
         if args.stage == "stereo":
             st = store.read_array("reference/stereo_status")
@@ -40,9 +42,12 @@ def main() -> None:
         elif args.stage == "temporal":
             st = store.read_array("dic/left/status")
             rep = None
-        else:
+        elif args.stage == "reconstruct":
             st = store.read_array("reconstruction/status")
             rep = store.read_array("reconstruction/reprojection_error")
+        else:
+            st = store.read_array("quality/rbm_valid")
+            rep = store.read_array("reconstruction/rbm_residual_rms")
     print(f"written: {out}")
     print(f"status: {status_counts(st)}")
     if rep is not None:

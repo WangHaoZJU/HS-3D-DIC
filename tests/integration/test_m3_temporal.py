@@ -10,7 +10,7 @@ from stereodic.calibration.report import save_calibration
 from stereodic.core.config import REPO_ROOT, load_experiment
 from stereodic.core.status import Status
 from stereodic.io.storage import ResultStore
-from stereodic.pipeline import run_reconstruct, run_stereo, run_temporal
+from stereodic.pipeline import run_rbm, run_reconstruct, run_stereo, run_temporal
 from stereodic.synth import SensorModel
 from stereodic.synth.stereo import cylinder_height, make_stereo_scene
 
@@ -42,6 +42,7 @@ def test_temporal_and_reconstruction_pipeline(tmp_path: Path):
     out = run_stereo(cfg)
     run_temporal(cfg)
     run_reconstruct(cfg)
+    run_rbm(cfg)
     with ResultStore.open(out, "r") as store:
         assert store.stage_done("temporal", store.h5["progress"].attrs["temporal_config_hash"])
         assert store.stage_done("reconstruct", store.h5["progress"].attrs["reconstruct_config_hash"])
@@ -52,6 +53,7 @@ def test_temporal_and_reconstruction_pipeline(tmp_path: Path):
         assert np.all(left_status == Status.OK)
         assert np.all(recon_status == Status.OK)
         assert np.isfinite(store.read_array("reconstruction/displacement_raw")).all()
+        assert store.read_array("reconstruction/displacement_rbm").shape == store.read_array("reconstruction/displacement_raw").shape
 
     # A second invocation uses the completion markers and leaves the result intact.
         before = store.read_array("reconstruction/displacement_raw")

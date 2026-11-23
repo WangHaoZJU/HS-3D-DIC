@@ -14,7 +14,7 @@ Python package: `stereodic`. Technical design: [docs/StereoDIC_Technical_Design.
 | M1 | 2D DIC core (B-spline, IC-GN, Numba), benchmarks B01/B03 | done |
 | M2 | Calibration (ChArUco), 2nd-order IC-GN, stereo matching (SIFT + RG-DIC), triangulation, reference shape, B04 | done (real-data E1/E2 pending) |
 | M3 | Fixed-reference temporal DIC, reconstruction, sync, spectra, CUDA path | done (GPU/E3 validation pending) |
-| M4 | Harmonic fit, ODS, FDD, mode shapes | — |
+| M4 | Harmonic fit, ODS, FDD, FRF, damping, MAC, rigid-body compensation | done (LDV/FEM validation pending) |
 
 ## Machines and workflow
 
@@ -85,12 +85,16 @@ uv run python scripts/run_dic.py --config configs/experiments/<name>.yaml --stag
 ```bash
 uv run python scripts/run_dic.py --config configs/experiments/<name>.yaml --stage temporal -v
 uv run python scripts/run_dic.py --config configs/experiments/<name>.yaml --stage reconstruct -v
+uv run python scripts/run_dic.py --config configs/experiments/<name>.yaml --stage rbm -v
 ```
 
 5. Dominant frequency extraction from local displacement:
 
 ```bash
 uv run python scripts/analyze.py --config configs/experiments/<name>.yaml --direction 2
+# optional harmonic fit, FDD, and FRF
+uv run python scripts/analyze.py --config configs/experiments/<name>.yaml --direction 2 \
+  --frequency 1000 --fdd --force-file force.csv
 ```
 
 ## Tests
@@ -128,7 +132,7 @@ stereodic/
   dic/         B-spline interpolation, shape functions (0/1/2), IC-GN, SIFT/RG-DIC stereo matching, backends
   recon/       triangulation, normals and local frames, reference shape
   pipeline.py  stage orchestration (calibrate, stereo, temporal, reconstruct)
-  vibration/   spectra and dominant-frequency extraction
+  vibration/   spectra, harmonic fit, ODS, FDD, FRF, damping, and MAC
 benchmarks/    synthetic accuracy and throughput benchmarks
 scripts/       command-line entry points
 tests/         unit / integration / backends (cuda)
