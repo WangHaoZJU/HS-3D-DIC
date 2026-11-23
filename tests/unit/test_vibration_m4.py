@@ -98,3 +98,36 @@ def test_rigid_motion_estimation_and_compensation():
     # Collinear reference points cannot uniquely determine 3D rotation.
     collinear = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]])
     assert not estimate_rigid_motion(collinear, collinear).valid
+
+
+def test_fdd_thin_svd_scales_to_many_channels():
+    fs = 1000.0
+    t = np.arange(512) / fs
+    f = 62.5
+    n_channels = 600
+    mode = np.linspace(-1.0, 1.0, n_channels)
+    x = np.outer(np.cos(2.0 * np.pi * f * t), mode)
+    result = frequency_domain_decomposition(x, t, nperseg=128, n_modes=2)
+    peak = int(np.argmax(result.singular_values[:, 0]))
+    assert abs(result.frequencies[peak] - f) <= fs / 128
+    assert modal_assurance(result.mode_shapes[peak, 0], mode) > 0.999999
+
+
+def test_harmonic_vectorized_matches_masked_path():
+    t = np.arange(500) / 1000.0
+    f = 43.2
+    sig = 1.8 * np.cos(2.0 * np.pi * f * t + 0.55) - 0.3
+    y = np.column_stack([sig, sig])
+    y[10, 1] = np.nan  # force column 1 onto the per-channel masked fallback
+    res = fit_harmonic(y, t, f)
+    np.testing.assert_allclose(res.amplitude[0, 0], res.amplitude[0, 1], atol=1e-10)
+    np.testing.assert_allclose(res.phase[0, 0], res.phase[0, 1], atol=1e-10)
+    assert res.n_samples[0] == 500 and res.n_samples[1] == 499
+
+
+def test_half_power_damping_respects_nan_gaps():
+    f = np.linspace(80.0, 120.0, 41)
+    a = 1.0 / np.sqrt(1.0 + ((f - 100.0) / 2.0) ** 2)
+    a[18] = np.nan  # NaN between peak (idx 20) and left crossing
+    res = half_power_damping(f, a, peak_index=20)
+    assert np.isnan(res.damping_ratio)

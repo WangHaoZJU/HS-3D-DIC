@@ -37,13 +37,21 @@ def half_power_damping(
     if peak_index <= 0 or peak_index >= f.size - 1 or not np.isfinite(a[peak_index]) or a[peak_index] <= 0:
         raise ValueError("peak must be an interior finite positive value")
     level = a[peak_index] / np.sqrt(2.0)
-    left = np.nonzero(a[: peak_index + 1] <= level)[0]
-    right = np.nonzero(a[peak_index:] <= level)[0]
-    if left.size == 0 or right.size == 0:
-        return HalfPowerResult(float(f[peak_index]), np.nan, np.nan, np.nan, peak_index)
-    i_left = int(left[-1])
-    i_right = peak_index + int(right[0])
-    if i_left == peak_index or i_right == peak_index:
+    i_left = None
+    for i in range(peak_index - 1, -1, -1):
+        if not np.isfinite(a[i]):
+            break
+        if a[i] <= level:
+            i_left = i
+            break
+    i_right = None
+    for i in range(peak_index + 1, f.size):
+        if not np.isfinite(a[i]):
+            break
+        if a[i] <= level:
+            i_right = i
+            break
+    if i_left is None or i_right is None:
         return HalfPowerResult(float(f[peak_index]), np.nan, np.nan, np.nan, peak_index)
     f_left = _crossing(f[i_left], a[i_left], f[i_left + 1], a[i_left + 1], level)
     f_right = _crossing(f[i_right - 1], a[i_right - 1], f[i_right], a[i_right], level)

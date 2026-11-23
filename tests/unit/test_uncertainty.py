@@ -34,9 +34,22 @@ def test_monte_carlo_matches_linear_scale():
     points = np.array([[10.0, 0.0, 700.0]])
     left = project(calibration.left, points)
     right = project(calibration.right, points + np.array([50.0, 0.0, 0.0]))
-    result = monte_carlo_triangulation(calibration, left, right, np.eye(2) * 0.01**2, samples=300, seed=4)
-    assert result.valid_samples[0] > 290
-    assert np.all(result.standard_deviation[0] > 0)
+    cov = np.eye(2) * 0.01**2
+    linear = triangulation_uncertainty(calibration, left, right, cov)
+    result = monte_carlo_triangulation(calibration, left, right, cov, samples=500, seed=4)
+    assert result.valid_samples[0] == 500
+    np.testing.assert_allclose(result.standard_deviation[0], linear.standard_deviation[0], rtol=0.15)
+
+
+def test_monte_carlo_excludes_geometry_inconsistent_samples():
+    calibration = _calibration()
+    # Point with a very small triangulation angle (< min_angle_deg) must be rejected
+    far_point = np.array([[0.0, 0.0, 1e5]])
+    left = project(calibration.left, far_point)
+    right = project(calibration.right, far_point + np.array([50.0, 0.0, 0.0]))
+    result = monte_carlo_triangulation(calibration, left, right, np.eye(2) * 0.01**2, samples=20, seed=0, min_angle_deg=1.0)
+    assert result.valid_samples[0] == 0
+    assert np.all(np.isnan(result.standard_deviation[0]))
 
 
 def test_noise_floor_statistics():

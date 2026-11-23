@@ -11,7 +11,7 @@ from stereodic.vibration.damping import half_power_damping
 from stereodic.vibration.fdd import frequency_domain_decomposition
 from stereodic.vibration.frf import estimate_frf
 from stereodic.vibration.ods import extract_ods
-from stereodic.vibration.spectrum import dominant_peaks, one_sided_spectrum
+from stereodic.vibration.spectrum import dominant_peaks, field_average_psd
 
 
 def main() -> None:
@@ -53,18 +53,17 @@ def main() -> None:
         else:
             displacement_all = store.read_array("reconstruction/displacement_local")
         displacement = displacement_all[:, :, args.direction]
-        # A robust aggregate trace keeps the frequency stage independent of a
-        # selected single POI while preserving the per-point data in HDF5.
-        trace = np.nanmedian(displacement, axis=1)
-        spec = one_sided_spectrum(trace, timestamps)
+        # Full-field averaged Welch PSD preserves antisymmetric / torsional modes
+        # that would cancel out under time-domain spatial averaging (docs §11.2).
+        spec = field_average_psd(displacement, timestamps, nperseg=args.nperseg)
         frequencies, amplitudes = dominant_peaks(
             spec, min_frequency_hz=args.min_frequency, max_frequency_hz=args.max_frequency, max_peaks=args.max_peaks
         )
         store.write_array("vibration/frequencies", frequencies, units="Hz")
         store.write_array("vibration/amplitudes", amplitudes, units="mm")
-        store.write_array("vibration/aggregate_trace", trace, units="mm", direction=args.direction)
         store.write_array("vibration/spectrum_frequencies", spec.frequencies, units="Hz")
-        store.write_array("vibration/spectrum_amplitude", spec.amplitude, units="mm")
+        store.write_array("vibration/spectrum_amplitude", spec.amplitude, units="mm", direction=args.direction)
+        store.write_array("vibration/spectrum_power", spec.power, units="mm^2/Hz", direction=args.direction)
         selected_frequency = args.frequency
         if selected_frequency is None and frequencies.size:
             selected_frequency = float(frequencies[0])
@@ -99,7 +98,8 @@ def main() -> None:
             print("FRF written")
         if frequencies.size:
             try:
-                damping = half_power_damping(spec.frequencies, spec.amplitude)
+                peak_idx = int(np.argmin(np.abs(spec.frequencies - frequencies[0])))
+                damping = half_power_damping(spec.frequencies, spec.amplitude, peak_index=peak_idx)
                 store.write_array("vibration/damping/peak_frequency_hz", np.array(damping.peak_frequency_hz), units="Hz")
                 store.write_array("vibration/damping/left_frequency_hz", np.array(damping.left_frequency_hz), units="Hz")
                 store.write_array("vibration/damping/right_frequency_hz", np.array(damping.right_frequency_hz), units="Hz")

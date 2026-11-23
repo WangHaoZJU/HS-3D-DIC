@@ -67,14 +67,17 @@ def frequency_domain_decomposition(
         spectra.append(np.fft.rfft(x[start : start + nperseg] * window[:, None], axis=0) / scale)
     Y = np.stack(spectra, axis=0)  # (segments, frequencies, channels)
     frequencies = np.fft.rfftfreq(nperseg, 1.0 / fs)
+    n_segments = max(1, Y.shape[0])
     modes = min(max(1, n_modes), x.shape[1])
     singular_values = np.zeros((frequencies.size, modes), dtype=np.float64)
     mode_shapes = np.zeros((frequencies.size, modes, x.shape[1]), dtype=np.complex128)
+    inv_sqrt_seg = 1.0 / np.sqrt(float(n_segments))
     for k in range(frequencies.size):
-        Z = Y[:, k, :].T  # channels x segments
-        spectral = (Z @ Z.conj().T) / max(1, Z.shape[1])
-        values_k, vectors_k = np.linalg.eigh(spectral)
-        order = np.argsort(values_k)[::-1][:modes]
-        singular_values[k] = np.maximum(values_k[order].real, 0.0)
-        mode_shapes[k] = vectors_k[:, order].T
+        # Thin SVD of Z = Y_f / sqrt(S) (channels x segments) avoids forming the
+        # (channels x channels) cross-spectral matrix G = Z @ Z^H (docs §11.5).
+        Z = Y[:, k, :].T * inv_sqrt_seg
+        U, s, _ = np.linalg.svd(Z, full_matrices=False)
+        r = min(modes, s.size)
+        singular_values[k, :r] = s[:r] ** 2
+        mode_shapes[k, :r, :] = U[:, :r].T
     return FDDResult(frequencies, singular_values, mode_shapes, fs, x.shape[0])

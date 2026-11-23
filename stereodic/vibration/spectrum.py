@@ -60,20 +60,76 @@ def one_sided_spectrum(values: np.ndarray, timestamps: np.ndarray, window: str =
     return Spectrum(np.fft.rfftfreq(n, 1.0 / fs), amp, amp * amp, fs, n)
 
 
+def _psd_to_amplitude(psd: np.ndarray, fs: float, nperseg: int, window: str = "hann") -> np.ndarray:
+    """Convert one-sided Welch PSD (unit^2/Hz) to peak sinusoidal amplitude using window ENBW."""
+    w = signal.get_window(window, nperseg, fftbins=True)
+    enbw = fs * float(np.sum(w * w)) / float(np.sum(w) ** 2)
+    p_spec = np.maximum(psd, 0.0) * enbw
+    scale = np.full_like(p_spec, 2.0)
+    scale[0] = 1.0
+    if nperseg % 2 == 0:
+        scale[-1] = 1.0
+    return np.sqrt(p_spec * scale)
+
+
 def welch_spectrum(
     values: np.ndarray,
     timestamps: np.ndarray,
     nperseg: int | None = None,
     noverlap: int | None = None,
 ) -> Spectrum:
-    """Return a Welch power spectrum and its amplitude-equivalent square root."""
+    """Return a Welch PSD and its ENBW-corrected sinusoidal peak amplitude."""
     x, fs = _prepare_signal(values, timestamps)
     if nperseg is None:
         nperseg = min(1024, x.size)
     nperseg = max(2, min(int(nperseg), x.size))
-    f, p = signal.welch(x, fs=fs, window="hann", nperseg=nperseg, noverlap=noverlap, detrend="constant")
-    amp = np.sqrt(np.maximum(p, 0.0) * 2.0 * fs / nperseg)
+    f, p = signal.welch(
+        x, fs=fs, window="hann", nperseg=nperseg, noverlap=noverlap, detrend="constant", scaling="density"
+    )
+    amp = _psd_to_amplitude(p, fs, nperseg, window="hann")
     return Spectrum(f, amp, p, fs, x.size)
+
+
+def field_average_psd(
+    values: np.ndarray,
+    timestamps: np.ndarray,
+    nperseg: int | None = None,
+    noverlap: int | None = None,
+) -> Spectrum:
+    """Average Welch PSD across all valid spatial points (docs §11.2).
+
+    Averaging power spectra rather than time-domain signals prevents opposite-phase
+    regions (e.g. torsional or higher bending modes) from cancelling out.
+    """
+    arr = np.asarray(values, dtype=np.float64)
+    if arr.ndim == 1:
+        return welch_spectrum(arr, timestamps, nperseg=nperseg, noverlap=noverlap)
+    t = np.asarray(timestamps, dtype=np.float64).reshape(-1)
+    if arr.shape[0] != t.size:
+        raise ValueError("values and timestamps must have the same time length")
+    fs = _uniform_sample_rate(t)
+    flat = arr.reshape(t.size, -1)
+    valid_cols: list[np.ndarray] = []
+    for j in range(flat.shape[1]):
+        col = flat[:, j]
+        finite = np.isfinite(col)
+        if int(finite.sum()) < 2:
+            continue
+        if not finite.all():
+            col = np.interp(t, t[finite], col[finite])
+        valid_cols.append(signal.detrend(col, type="constant"))
+    if not valid_cols:
+        raise ValueError("no valid spatial channels with at least two finite samples")
+    X = np.column_stack(valid_cols)
+    if nperseg is None:
+        nperseg = min(1024, t.size)
+    nperseg = max(2, min(int(nperseg), t.size))
+    f, p_all = signal.welch(
+        X, fs=fs, window="hann", nperseg=nperseg, noverlap=noverlap, detrend="constant", scaling="density", axis=0
+    )
+    p_mean = np.mean(p_all, axis=1)
+    amp = _psd_to_amplitude(p_mean, fs, nperseg, window="hann")
+    return Spectrum(f, amp, p_mean, fs, t.size)
 
 
 def dominant_peaks(
@@ -82,6 +138,7 @@ def dominant_peaks(
     max_frequency_hz: float | None = None,
     prominence: float | None = None,
     max_peaks: int = 10,
+    refine: bool = True,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Return dominant peak frequencies and amplitudes, sorted by amplitude."""
     f = spectrum.frequencies
@@ -96,4 +153,16 @@ def dominant_peaks(
     local, _ = signal.find_peaks(a[idx], **kwargs)
     peaks = idx[local]
     order = np.argsort(a[peaks])[::-1][:max_peaks]
-    return f[peaks[order]], a[peaks[order]]
+    chosen = peaks[order]
+    peak_freqs = f[chosen].astype(np.float64, copy=True)
+    peak_amps = a[chosen].astype(np.float64, copy=True)
+    if refine and chosen.size:
+        df = float(f[1] - f[0]) if f.size > 1 else 0.0
+        for m, k in enumerate(chosen):
+            if 0 < k < f.size - 1 and a[k - 1] > 0 and a[k] > 0 and a[k + 1] > 0:
+                ym, y0, yp = np.log(a[k - 1]), np.log(a[k]), np.log(a[k + 1])
+                denom = ym - 2.0 * y0 + yp
+                if denom < 0.0:
+                    delta = float(np.clip(0.5 * (ym - yp) / denom, -0.5, 0.5))
+                    peak_freqs[m] = f[k] + delta * df
+    return peak_freqs, peak_amps

@@ -92,13 +92,47 @@ def fit_harmonic(
     residual = np.full(flat.shape[1], np.nan, dtype=np.float64)
     valid = np.zeros(flat.shape[1], dtype=bool)
     n_used = np.zeros(flat.shape[1], dtype=np.int64)
-    for j in range(flat.shape[1]):
+
+    # Fast vectorized path when weights are shared across channels (None or 1D)
+    shared_weights = weights is None or np.asarray(weights).ndim == 1
+    full_mask = np.all(np.isfinite(flat), axis=0)
+    if shared_weights and t.size >= n_coeff and np.any(full_mask):
+        w1 = np.ones(t.size, dtype=np.float64) if weights is None else np.asarray(weights, dtype=np.float64).reshape(-1)
+        w_ok = np.isfinite(w1) & (w1 > 0)
+        if int(w_ok.sum()) >= n_coeff:
+            A_full = design[w_ok]
+            sw = np.sqrt(w1[w_ok])
+            B_full = flat[w_ok][:, full_mask]
+            try:
+                sol_full, _, rank_full, _ = np.linalg.lstsq(A_full * sw[:, None], B_full * sw[:, None], rcond=None)
+            except np.linalg.LinAlgError:
+                rank_full = 0
+                sol_full = None
+            if sol_full is not None and rank_full >= n_coeff:
+                ok_cols = np.all(np.isfinite(sol_full), axis=0)
+                full_idx = np.nonzero(full_mask)[0][ok_cols]
+                if full_idx.size:
+                    sol_ok = sol_full[:, ok_cols]
+                    err = A_full @ sol_ok - B_full[:, ok_cols]
+                    w_norm = w1[w_ok] / np.sum(w1[w_ok])
+                    coeff[:, full_idx] = sol_ok
+                    residual[full_idx] = np.sqrt(np.sum(w_norm[:, None] * (err * err), axis=0))
+                    valid[full_idx] = True
+                    n_used[full_idx] = int(w_ok.sum())
+            remaining_idx = np.nonzero(~full_mask)[0]
+        else:
+            remaining_idx = np.arange(flat.shape[1])
+    else:
+        remaining_idx = np.arange(flat.shape[1])
+
+    for j in remaining_idx:
         mask = np.isfinite(flat[:, j]) & np.isfinite(w_flat[:, j]) & (w_flat[:, j] > 0)
         if int(mask.sum()) < n_coeff:
             continue
         A = design[mask]
         b = flat[mask, j]
-        sw = np.sqrt(w_flat[mask, j])
+        wj = w_flat[mask, j]
+        sw = np.sqrt(wj)
         try:
             solution, _, rank, _ = np.linalg.lstsq(A * sw[:, None], b * sw, rcond=None)
         except np.linalg.LinAlgError:
@@ -106,7 +140,8 @@ def fit_harmonic(
         if rank < n_coeff or not np.all(np.isfinite(solution)):
             continue
         coeff[:, j] = solution
-        residual[j] = float(np.sqrt(np.mean((A @ solution - b) ** 2)))
+        err = A @ solution - b
+        residual[j] = float(np.sqrt(np.sum(wj * (err * err)) / np.sum(wj)))
         valid[j] = True
         n_used[j] = int(mask.sum())
 
