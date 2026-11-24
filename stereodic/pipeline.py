@@ -100,11 +100,38 @@ def _file_sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else ""
 
 
-def _read_reference(cfg: ExperimentConfig):
+def open_cameras(cfg: ExperimentConfig):
+    """Left and right measurement sequences with `cameras.*.frame_offset` applied."""
     from .io.sequence import open_sequence
 
-    seq_l = open_sequence(cfg.data_path(cfg.cameras.left.path), cfg.cameras.left.pattern)
-    seq_r = open_sequence(cfg.data_path(cfg.cameras.right.path), cfg.cameras.right.pattern)
+    out = []
+    for src in (cfg.cameras.left, cfg.cameras.right):
+        out.append(open_sequence(cfg.data_path(src.path), src.pattern, src.frame_offset))
+    return out[0], out[1]
+
+
+def camera_timestamps(cfg: ExperimentConfig, side: str, n_frames: int) -> np.ndarray:
+    """Timestamps of the first `n_frames` (offset-applied) frames of one camera.
+
+    A timestamp file lists every exported frame, so it is shifted by `frame_offset`;
+    without a file the configured frame rate gives a regular time axis.
+    """
+    from .io.sync import load_timestamps, regular_timestamps
+
+    src = getattr(cfg.cameras, side)
+    if src.timestamp_path is None:
+        return regular_timestamps(n_frames, cfg.cameras.frame_rate_hz)
+    values = load_timestamps(cfg.data_path(src.timestamp_path))
+    stop = src.frame_offset + n_frames
+    if values.size < stop:
+        raise ValueError(
+            f"{side} timestamp file has {values.size} entries; frame_offset {src.frame_offset} + {n_frames} frames needed"
+        )
+    return values[src.frame_offset : stop]
+
+
+def _read_reference(cfg: ExperimentConfig):
+    seq_l, seq_r = open_cameras(cfg)
     i = cfg.reference_frame
     if i >= len(seq_l) or i >= len(seq_r):
         raise ValueError(f"reference_frame {i} out of range ({len(seq_l)} / {len(seq_r)} frames)")
@@ -146,6 +173,7 @@ def _stereo_stage_hash(cfg: ExperimentConfig) -> str:
             "calibration_sha256": _file_sha256(cfg.data_path(cfg.calibration_file)),
         }
     )
+
 
 
 def run_stereo(cfg: ExperimentConfig, force: bool = False, progress: ProgressReporter | None = None) -> Path:
@@ -226,11 +254,15 @@ def run_stereo(cfg: ExperimentConfig, force: bool = False, progress: ProgressRep
 def _selected_frame_indices(cfg: ExperimentConfig, n_left: int, n_right: int) -> np.ndarray:
     from .io.sequence import frame_indices
 
-    if n_left != n_right:
-        raise ValueError(f"left/right sequence lengths differ: {n_left} / {n_right}")
-    selected = list(frame_indices(n_left, cfg.frames.start, cfg.frames.stop, cfg.frames.step))
-    if cfg.reference_frame >= n_left:
-        raise ValueError(f"reference_frame {cfg.reference_frame} out of range ({n_left} frames)")
+    n = min(n_left, n_right)
+    if n_left != n_right and (cfg.frames.stop is None or cfg.frames.stop > n):
+        raise ValueError(
+            f"left/right sequence lengths differ after frame_offset: {n_left} / {n_right}. "
+            f"Check the trigger alignment (cameras.*.frame_offset) or limit frames.stop to <= {n}"
+        )
+    selected = list(frame_indices(n, cfg.frames.start, cfg.frames.stop, cfg.frames.step))
+    if cfg.reference_frame >= n:
+        raise ValueError(f"reference_frame {cfg.reference_frame} out of range ({n} frames)")
     if cfg.reference_frame not in selected:
         selected.append(cfg.reference_frame)
         selected.sort()
@@ -359,8 +391,7 @@ def run_temporal(cfg: ExperimentConfig, force: bool = False, progress: ProgressR
     from .core.types import ROI
     from .dic import shape_functions as sf
     from .dic.temporal import TemporalMatchOptions, TemporalTracker
-    from .io.sequence import open_sequence
-    from .io.sync import pair_timestamps, sequence_timestamps
+    from .io.sync import pair_timestamps
     from .io.storage import ResultStore
 
     progress = ensure_progress(progress)
@@ -371,8 +402,7 @@ def run_temporal(cfg: ExperimentConfig, force: bool = False, progress: ProgressR
         raise FileNotFoundError(f"stereo output does not exist: {out}; run --stage stereo first")
 
     progress.phase("preparing")
-    seq_l = open_sequence(cfg.data_path(cfg.cameras.left.path), cfg.cameras.left.pattern)
-    seq_r = open_sequence(cfg.data_path(cfg.cameras.right.path), cfg.cameras.right.pattern)
+    seq_l, seq_r = open_cameras(cfg)
     frame_ids = _selected_frame_indices(cfg, len(seq_l), len(seq_r))
     options = TemporalMatchOptions.from_config(cfg.dic)
     n_params = sf.n_params(options.icgn.shape_order)
@@ -412,25 +442,22 @@ def run_temporal(cfg: ExperimentConfig, force: bool = False, progress: ProgressR
             store.invalidate_stage("reconstruct")
             store.invalidate_stage("rbm")
             prog.attrs["temporal_run_hash"] = stage_hash
-        store.write_array("time/frame_ids", np.column_stack([frame_ids, frame_ids]))
+        off_l, off_r = cfg.cameras.left.frame_offset, cfg.cameras.right.frame_offset
+        store.write_array("time/frame_ids", np.column_stack([frame_ids + off_l, frame_ids + off_r]), frame="raw export index")
 
-        ts_l = sequence_timestamps(
-            len(seq_l), cfg.cameras.frame_rate_hz,
-            cfg.data_path(cfg.cameras.left.timestamp_path) if cfg.cameras.left.timestamp_path else None,
-        )
-        ts_r = sequence_timestamps(
-            len(seq_r), cfg.cameras.frame_rate_hz,
-            cfg.data_path(cfg.cameras.right.timestamp_path) if cfg.cameras.right.timestamp_path else None,
-        )
+        # pair over the common range; a mismatch means dropped frames or wrong trigger alignment
+        n_common = min(len(seq_l), len(seq_r))
+        ts_l = camera_timestamps(cfg, "left", n_common)
+        ts_r = camera_timestamps(cfg, "right", n_common)
         max_delta_s = (
             None if cfg.cameras.max_sync_delta_us is None else float(cfg.cameras.max_sync_delta_us) * 1e-6
         )
         sync = pair_timestamps(ts_l, ts_r, max_delta_seconds=max_delta_s)
         if not (
-            np.array_equal(sync.left_indices, np.arange(len(seq_l)))
-            and np.array_equal(sync.right_indices, np.arange(len(seq_r)))
+            np.array_equal(sync.left_indices, np.arange(n_common))
+            and np.array_equal(sync.right_indices, np.arange(n_common))
         ):
-            raise ValueError("left/right timestamp pairing is incomplete; inspect with scripts/check_sync.py")
+            raise ValueError("left/right timestamp pairing is incomplete; inspect it on the import page or with scripts/check_sync.py")
         store.write_array("time/timestamps_left", ts_l[frame_ids], units="s")
         store.write_array("time/timestamps_right", ts_r[frame_ids], units="s")
         store.write_array("time/timestamps", 0.5 * (ts_l[frame_ids] + ts_r[frame_ids]), units="s")
@@ -834,10 +861,7 @@ def stage_status(cfg: ExperimentConfig) -> dict[str, dict]:
                 out["stereo"] = done_record(attrs, "stereo", cur)
 
             try:
-                from .io.sequence import open_sequence
-
-                seq_l = open_sequence(cfg.data_path(cfg.cameras.left.path), cfg.cameras.left.pattern)
-                seq_r = open_sequence(cfg.data_path(cfg.cameras.right.path), cfg.cameras.right.pattern)
+                seq_l, seq_r = open_cameras(cfg)
                 frame_ids = _selected_frame_indices(cfg, len(seq_l), len(seq_r))
                 cur = _temporal_stage_hash(
                     cfg, frame_ids, cfg.data_path(cfg.calibration_file), str(attrs.get("stereo_config_hash", ""))

@@ -16,6 +16,16 @@ def natural_key(name: str) -> list[object]:
     return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", name)]
 
 
+TIFF_SUFFIXES = (".tif", ".tiff")
+
+
+def is_tiff_dir(path: Path, pattern: str) -> bool:
+    path = Path(path)
+    if not path.is_dir():
+        return False
+    return any(p.suffix.lower() in TIFF_SUFFIXES for p in path.glob(pattern))
+
+
 class TiffSequence(ImageSequence):
     def __init__(self, directory: str | Path, pattern: str = "*.tif") -> None:
         self.directory = Path(directory)

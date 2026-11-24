@@ -128,3 +128,38 @@ def test_pipeline_job_on_demo_data(client: TestClient):
     assert done["state"] == "succeeded", client.get(f"/api/jobs/{job['id']}/log").json()["text"][-2000:]
     st = client.get("/api/experiments/tiny/status").json()["stages"]
     assert [st[s]["state"] for s in ("stereo", "temporal", "reconstruct")] == ["done"] * 3
+
+
+def test_import_endpoints(client: TestClient):
+    import cv2
+    import numpy as np
+
+    settings = client.app.state.settings
+    spec = DemoSpec(name="imp", image_size=(160, 128), n_frames=6, n_calib_views=0, poi_step=24)
+    data_dir = make_demo_dataset(settings.data_root, spec, workspace=settings.workspace / "imp", workers=1, exact_calibration=True)
+
+    probe = client.post("/api/sequences/probe", json={"path": str(data_dir / "left"), "pattern": "*.tif"}).json()
+    assert probe["n_frames"] == 6 and probe["shape"] == [128, 160] and probe["reader"] == "tiff"
+    assert probe["timestamp_candidates"] and probe["dtype"] == "uint16"
+    assert client.post("/api/sequences/probe", json={"path": "/etc", "pattern": "*"}).status_code == 403
+
+    seqs = client.get("/api/experiments/imp/sequences").json()
+    assert seqs["n_frames"] == 6 and not seqs["length_mismatch"]
+    assert seqs["cameras"]["left"]["full_scale"] >= seqs["cameras"]["left"]["value_max"]
+
+    r = client.get("/api/experiments/imp/frames/left/3.png")
+    assert r.status_code == 200 and r.headers["x-frame-name"].endswith(".tif")
+    img = cv2.imdecode(np.frombuffer(r.content, np.uint8), cv2.IMREAD_UNCHANGED)
+    assert img.shape == (128, 160)
+    r = client.get("/api/experiments/imp/frames/right/0.png", params={"overlay": "saturation", "lo": 0, "hi": 4095, "scale": 0.5})
+    assert cv2.imdecode(np.frombuffer(r.content, np.uint8), cv2.IMREAD_UNCHANGED).shape == (64, 80, 3)
+    assert client.get("/api/experiments/imp/frames/left/99.png").status_code == 404
+
+    rep = client.get("/api/experiments/imp/frames/left/0/report").json()
+    assert 2.0 < rep["speckle_px"] < 7.0 and rep["saturation_fraction"] < 0.01 and rep["raw_index"] == 0
+
+    sync = client.get("/api/experiments/imp/sync").json()
+    assert sync["index_aligned"] and sync["n_pairs"] == 6 and sync["source"]["left"] == "file"
+
+    sharp = client.get("/api/experiments/imp/sharpness", params={"points": 4}).json()
+    assert len(sharp["frames"]) == 4 and len(sharp["left"]) == 4 and all(v > 0 for v in sharp["right"])

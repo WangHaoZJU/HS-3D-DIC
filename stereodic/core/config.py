@@ -93,6 +93,9 @@ class CameraSource(_Strict):
     # (cameras often record a cropped window to reach high frame rates)
     sensor_origin: list[int] = Field(default_factory=lambda: [0, 0])
     timestamp_path: Path | None = None
+    # leading frames of this camera's export to skip so that frame k of both cameras is the
+    # same instant (pre-trigger lengths can differ between cameras); timestamps are offset too
+    frame_offset: int = Field(0, ge=0)
 
 
 class CamerasConfig(_Strict):
@@ -236,8 +239,26 @@ def load_experiment(
     return cfg
 
 
+# Fields added after results already existed: left out of hashes while at their default,
+# so adding them does not invalidate earlier results.
+_HASH_OMIT_DEFAULTS = {"frame_offset": 0}
+
+
+def _strip_new_defaults(data: Any) -> Any:
+    if isinstance(data, dict):
+        return {
+            k: _strip_new_defaults(v)
+            for k, v in data.items()
+            if not (k in _HASH_OMIT_DEFAULTS and v == _HASH_OMIT_DEFAULTS[k])
+        }
+    if isinstance(data, list):
+        return [_strip_new_defaults(v) for v in data]
+    return data
+
+
 def config_hash(obj: BaseModel | dict[str, Any]) -> str:
     """Stable SHA-256 of a config (or sub-config), used for cache invalidation."""
     data = obj.model_dump(mode="json") if isinstance(obj, BaseModel) else obj
+    data = _strip_new_defaults(data)
     blob = json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()

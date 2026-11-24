@@ -89,11 +89,56 @@ def frame_indices(n_frames: int, start: int = 0, stop: int | None = None, step: 
     return range(start, stop, step)
 
 
-def open_sequence(path: str | Path, pattern: str = "*.tif") -> ImageSequence:
-    """Open a sequence by path. Currently: a directory of single-frame TIFF files."""
-    from .readers.tiff import TiffSequence
+class OffsetSequence(ImageSequence):
+    """View of `base` that skips its first `offset` frames (per-camera trigger alignment).
+
+    Frame k of the view is raw frame k + offset of the base sequence; `raw_index`
+    and `frame_name` keep the link to the original files.
+    """
+
+    def __init__(self, base: ImageSequence, offset: int = 0) -> None:
+        if offset < 0:
+            raise ValueError("frame offset must be >= 0")
+        if offset >= len(base):
+            raise ValueError(f"frame offset {offset} leaves no frames ({len(base)} in the sequence)")
+        self.base = base
+        self.offset = int(offset)
+
+    def __len__(self) -> int:
+        return len(self.base) - self.offset
+
+    @property
+    def frame_shape(self) -> tuple[int, int]:
+        return self.base.frame_shape
+
+    @property
+    def dtype(self) -> np.dtype:
+        return self.base.dtype
+
+    def raw_index(self, index: int) -> int:
+        n = len(self)
+        if not -n <= index < n:
+            raise IndexError(f"frame {index} out of range [0, {n})")
+        return index % n + self.offset
+
+    def frame_name(self, index: int) -> str:
+        return self.base.frame_name(self.raw_index(index))
+
+    def _read_full(self, index: int) -> np.ndarray:
+        return self.base._read_full(self.raw_index(index))
+
+
+def open_sequence(path: str | Path, pattern: str = "*.tif", frame_offset: int = 0) -> ImageSequence:
+    """Open a sequence with the first registered reader that accepts `path` (readers.Reader).
+
+    `frame_offset` skips that many leading frames (see `OffsetSequence`).
+    """
+    from .readers import find_reader, readers
 
     path = Path(path)
-    if path.is_dir():
-        return TiffSequence(path, pattern)
-    raise ValueError(f"unsupported sequence source: {path} (expected a directory of TIFF frames)")
+    reader = find_reader(path, pattern)
+    if reader is None:
+        kinds = "; ".join(f"{r.name}: {r.description}" for r in readers())
+        raise ValueError(f"unsupported sequence source: {path} (pattern {pattern!r}). Supported: {kinds}")
+    seq = reader.open(path, pattern)
+    return OffsetSequence(seq, frame_offset) if frame_offset else seq

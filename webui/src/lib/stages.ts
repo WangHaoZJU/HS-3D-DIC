@@ -42,7 +42,6 @@ export const SECTIONS: {
     key: 'import',
     label: '数据导入',
     icon: FolderInput,
-    milestone: 'U1',
     description: '导入相机导出的序列，检查位深、饱和、散斑、同步与丢帧',
   },
   {

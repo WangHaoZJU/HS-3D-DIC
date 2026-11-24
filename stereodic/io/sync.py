@@ -116,3 +116,58 @@ def sequence_timestamps(
     if values.size != n_frames:
         raise ValueError(f"timestamp count {values.size} differs from frame count {n_frames}")
     return values
+
+
+def timing_summary(timestamps: np.ndarray, nominal_rate_hz: float | None = None) -> dict:
+    """Frame-interval statistics of one camera: rate, jitter and gaps (dt > 1.5 median)."""
+    t = np.asarray(timestamps, dtype=np.float64).reshape(-1)
+    if t.size < 2:
+        return {"n": int(t.size), "rate_hz": None, "jitter_us": None, "gaps": [], "n_gaps": 0}
+    dt = np.diff(t)
+    med = float(np.median(dt))
+    gap_idx = np.nonzero(dt > 1.5 * med)[0]
+    out = {
+        "n": int(t.size),
+        "duration_s": float(t[-1] - t[0]),
+        "rate_hz": 1.0 / med if med > 0 else None,
+        "jitter_us": float(np.std(dt) * 1e6),
+        "n_gaps": int(gap_idx.size),
+        "gaps": [{"after_frame": int(i), "dt_s": float(dt[i]), "missing": int(round(dt[i] / med)) - 1} for i in gap_idx[:20]],
+    }
+    if nominal_rate_hz:
+        out["rate_error_ppm"] = (out["rate_hz"] / nominal_rate_hz - 1.0) * 1e6 if out["rate_hz"] else None
+    return out
+
+
+def sync_summary(
+    left_timestamps: np.ndarray,
+    right_timestamps: np.ndarray,
+    max_delta_seconds: float | None = None,
+    nominal_rate_hz: float | None = None,
+) -> dict:
+    """JSON-ready pairing report for the import page (docs §3.3)."""
+    rep = pair_timestamps(left_timestamps, right_timestamps, max_delta_seconds)
+    n_l, n_r = int(np.size(left_timestamps)), int(np.size(right_timestamps))
+    d_us = np.abs(rep.delta_seconds) * 1e6
+    unpaired_l = np.setdiff1d(np.arange(n_l), rep.left_indices)
+    unpaired_r = np.setdiff1d(np.arange(n_r), rep.right_indices)
+    identity = rep.left_indices.size == min(n_l, n_r) and bool(
+        np.array_equal(rep.left_indices, rep.right_indices)
+    )
+    return {
+        "n_left": n_l,
+        "n_right": n_r,
+        "n_pairs": int(rep.left_indices.size),
+        "index_aligned": identity,
+        "delta_us": {
+            "max": float(d_us.max()) if d_us.size else None,
+            "mean": float(d_us.mean()) if d_us.size else None,
+            "p99": float(np.percentile(d_us, 99)) if d_us.size else None,
+        },
+        "unpaired_left": unpaired_l[:50].tolist(),
+        "unpaired_right": unpaired_r[:50].tolist(),
+        "n_unpaired_left": int(unpaired_l.size),
+        "n_unpaired_right": int(unpaired_r.size),
+        "left": timing_summary(left_timestamps, nominal_rate_hz),
+        "right": timing_summary(right_timestamps, nominal_rate_hz),
+    }

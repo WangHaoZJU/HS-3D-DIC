@@ -152,6 +152,106 @@ export type JsonSchema = {
   $defs?: Record<string, JsonSchema>
 }
 
+export type ProbeResult = {
+  path: string
+  pattern: string
+  reader: string | null
+  n_frames: number
+  shape: [number, number]
+  dtype: string
+  container_bits: number
+  effective_bits: number
+  msb_aligned_shift: number
+  data_bits: number
+  value_min: number
+  value_max: number
+  full_scale: number
+  first_name: string
+  last_name: string
+  total_bytes: number | null
+  numbering: {
+    numbered: boolean
+    first: number | null
+    last: number | null
+    gaps: { after: number; missing: number }[]
+    n_missing: number
+    duplicates: number
+  }
+  timestamp_candidates: string[]
+  warnings: string[]
+}
+
+export type CameraSequence = Partial<ProbeResult> & {
+  path: string
+  pattern: string
+  frame_offset: number
+  timestamp_path: string | null
+  raw_frames?: number
+  error?: string
+}
+
+export type Sequences = {
+  cameras: { left: CameraSequence; right: CameraSequence }
+  frame_rate_hz: number
+  n_frames: number
+  length_mismatch: boolean
+  reference_frame: number
+  frames: { start: number; stop: number | null; step: number }
+}
+
+export type FrameReport = {
+  frame: number
+  name: string
+  raw_index: number
+  full_scale: number
+  min: number
+  max: number
+  mean: number
+  std: number
+  p01: number
+  p999: number
+  saturation_fraction: number
+  dark_fraction: number
+  contrast: number
+  mig: number
+  speckle_px: number
+  sharpness: number
+  histogram: { counts: number[]; edges: number[] }
+}
+
+export type Timing = {
+  n: number
+  duration_s?: number
+  rate_hz: number | null
+  jitter_us: number | null
+  n_gaps: number
+  gaps: { after_frame: number; dt_s: number; missing: number }[]
+  rate_error_ppm?: number | null
+}
+
+export type SyncResult = {
+  n_left: number
+  n_right: number
+  n_pairs: number
+  index_aligned: boolean
+  delta_us: { max: number | null; mean: number | null; p99: number | null }
+  unpaired_left: number[]
+  unpaired_right: number[]
+  n_unpaired_left: number
+  n_unpaired_right: number
+  left: Timing
+  right: Timing
+  source: { left: 'file' | 'frame_rate'; right: 'file' | 'frame_rate' }
+  max_sync_delta_us: number | null
+}
+
+export type Sharpness = {
+  frames: number[]
+  n_frames: number
+  left: number[]
+  right: number[]
+}
+
 // ------------------------------------------------------------------ calls
 const get = <T>(url: string, params?: object) =>
   http.get<T>(url, { params }).then((r) => r.data)
@@ -215,6 +315,41 @@ export const api = {
     }),
   summaries: (id: string, since = 0) =>
     get<Record<string, unknown>[]>(`/jobs/${id}/summaries`, { since }),
+
+  probe: (path: string, pattern: string) =>
+    http
+      .post<ProbeResult>('/sequences/probe', { path, pattern })
+      .then((r) => r.data),
+  sequences: (name: string) =>
+    get<Sequences>(`/experiments/${encodeURIComponent(name)}/sequences`),
+  frameUrl: (
+    name: string,
+    cam: 'left' | 'right',
+    k: number,
+    opts: {
+      lo?: number
+      hi?: number
+      overlay?: 'saturation'
+      scale?: number
+      v?: string
+    } = {}
+  ) => {
+    const q = new URLSearchParams()
+    for (const [key, val] of Object.entries(opts))
+      if (val !== undefined && val !== null) q.set(key, String(val))
+    const qs = q.toString()
+    return `/api/experiments/${encodeURIComponent(name)}/frames/${cam}/${k}.png${qs ? `?${qs}` : ''}`
+  },
+  frameReport: (name: string, cam: 'left' | 'right', k: number) =>
+    get<FrameReport>(
+      `/experiments/${encodeURIComponent(name)}/frames/${cam}/${k}/report`
+    ),
+  sync: (name: string) =>
+    get<SyncResult>(`/experiments/${encodeURIComponent(name)}/sync`),
+  sharpness: (name: string, points = 120) =>
+    get<Sharpness>(`/experiments/${encodeURIComponent(name)}/sharpness`, {
+      points,
+    }),
 }
 
 export const qk = {
@@ -225,4 +360,9 @@ export const qk = {
   status: (name: string) => ['status', name] as const,
   jobs: ['jobs'] as const,
   fs: (root: string, path: string) => ['fs', root, path] as const,
+  sequences: (name: string) => ['sequences', name] as const,
+  sync: (name: string) => ['sync', name] as const,
+  sharpness: (name: string) => ['sharpness', name] as const,
+  frameReport: (name: string, cam: string, k: number) =>
+    ['frame-report', name, cam, k] as const,
 }

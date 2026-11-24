@@ -612,7 +612,7 @@ ssh -N -L 8000:127.0.0.1:8000 <linux-host>
 | 里程碑 | 内容 | 依赖的 §9 项 | 出口 |
 | --- | --- | --- | --- |
 | **U0 骨架** | 裁剪 shadcn-admin；FastAPI 骨架；系统页、文件浏览、实验增删改；由 Schema 生成配置表单；任务队列 + WebSocket（先用一个模拟任务）；`make_demo_dataset.py` | B1、B4 | 在 Mac 上新建演示实验、编辑配置，模拟任务的进度能实时显示 |
-| **U1 导入与检查** | 导入向导、左右联动帧查看器、直方图/饱和/散斑/清晰度、同步检查 | B6、B8、B9 | 演示数据和一组真实导出数据都能导入并通过检查 |
+| **U1 导入与检查** ✅ | 导入向导、左右联动帧查看器、直方图/饱和/散斑/清晰度、同步检查、规划计算器 | B6、B8、B9 | 演示数据通过（真实导出数据待相机到位后验证） |
 | **U2 标定** | 检测 → 视图列表 → 标定 → 结果（RMS、残差、三维位姿）→ 剔除视图重标 | B5 | 合成 ChArUco 数据的标定结果与命令行一致 |
 | **U3 参考帧与立体** | 掩膜绘制、POI 预览、立体任务、POI 叠加、三维形貌 | — | 演示数据的形貌误差与 B04 量级一致 |
 | **U4 时序、重建、补偿** | 运行/续算/取消、实时摘要、状态码时空图、位移场浏览、点时间序列 | B7 | 中途取消后可以续算，结果与不中断时一致 |
@@ -631,6 +631,18 @@ ssh -N -L 8000:127.0.0.1:8000 <linux-host>
 - `webui`：概览、实验列表/新建/复制/删除、Schema 表单 + YAML 编辑器、运行菜单、底部任务栏、任务队列与日志、系统页；U1–U5 页面先显示计划内容。
 - 测试：`tests/server/test_api.py`（含在演示数据上真实运行 stereo → temporal → reconstruct）、`tests/integration/test_progress_status.py`（取消后续算、阶段状态）。
 - 在 Mac（Numba）上用演示数据从 UI 提交：标定约 1 s（立体 RMS 0.036 px、夹角 20.01°）；流水线 stereo → rbm 约 20 s（945 个 POI × 160 帧）。
+
+### 11.2 U1 完成情况（2026-11-24）
+
+- `stereodic`：
+  - 读取器注册（`io/readers`）：TIFF 目录、PNG/BMP 目录（OpenCV，保留原始位深；JPEG 等有损格式拒绝）；相机厂商格式以后注册一个 `Reader` 即可（B8）。
+  - 帧偏移（B9）：`cameras.*.frame_offset` 跳过该相机导出的开头若干帧；时间戳文件同步平移；`time/frame_ids` 记录原始导出序号。左右帧数不同时，必须把 `frames.stop` 限制在共同长度内，否则报错并提示。新字段取默认值时不进入阶段哈希，已有结果不会因升级而过期。
+  - `io/probe.py`：帧数、尺寸、存储位深与有效位深（识别“12 位数据左对齐存 16 位”）、文件名编号缺口、时间戳候选文件（B6）。
+  - `quality/image.py`：直方图、饱和比例、量程利用、对比度、平均梯度 MIG、散斑尺寸（自相关半高宽，按合成散斑标定，±20%）、归一化梯度能量（清晰度）。
+  - `io/sync.py`：`sync_summary` / `timing_summary`，配对、同步偏差、未配对帧、帧间隔间隙。
+- `stereodic_server`：`POST /sequences/probe`、`GET /experiments/{eid}/sequences`、`/frames/{cam}/{k}.png`（自动/全量程窗口、饱和标红、缩放）、`/frames/{cam}/{k}/report`、`/sync`、`/sharpness`。只读原始图像，任务运行中也可用。
+- `webui`：数据导入页（左右序列编辑与探测、写入配置、帧偏移、联动缩放平移的双图查看器与播放、逐帧检查卡片、清晰度曲线与参考帧设置、同步卡片）；规划计算器（录制时长与 Δf、混叠判定、曝光上限、噪声底与可测最小振幅）。
+- 测试：`tests/unit/test_import_checks.py`、`tests/integration/test_frame_offset.py`（偏移导出与对齐导出结果一致）、`tests/server/test_api.py::test_import_endpoints`。
 
 ## 12. 风险与待确认事项
 
