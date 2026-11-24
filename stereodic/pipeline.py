@@ -12,19 +12,23 @@ from pathlib import Path
 import numpy as np
 
 from .core.config import ExperimentConfig, config_hash
+from .core.progress import JobCancelled, ProgressReporter, ensure_progress
 from .dic import shape_functions as sf
 
 log = logging.getLogger(__name__)
 
+STAGES = ("calibrate", "stereo", "temporal", "reconstruct", "rbm", "analyze", "uncertainty")
+
 
 # ------------------------------------------------------------------- calibration
-def run_calibration(cfg: ExperimentConfig, plot: bool = True):
+def run_calibration(cfg: ExperimentConfig, plot: bool = True, progress: ProgressReporter | None = None):
     """Detect ChArUco corners in the calibration images, calibrate, write `calibration_file`."""
     from .calibration.calibrate import CalibrationOptions, calibrate_stereo
     from .calibration.detect import CharucoBoardSpec, detect_charuco
     from .calibration.report import plot_residuals, save_calibration
     from .io.sequence import open_sequence
 
+    progress = ensure_progress(progress)
     cc = cfg.calibration
     if cc is None:
         raise ValueError("experiment config has no `calibration` section")
@@ -48,7 +52,10 @@ def run_calibration(cfg: ExperimentConfig, plot: bool = True):
 
     dets = {"left": [], "right": []}
     names = []
+    progress.phase("detecting")
     for i in range(len(seq_l)):
+        progress.check_cancel()
+        progress.update(i, len(seq_l), f"view {seq_l.frame_name(i)}")
         names.append((seq_l.frame_name(i), seq_r.frame_name(i)))
         for side, seq, origin in (("left", seq_l, origin_l), ("right", seq_r, origin_r)):
             d = detect_charuco(seq.read(i), spec, min_corners=cc.min_corners)
@@ -56,6 +63,9 @@ def run_calibration(cfg: ExperimentConfig, plot: bool = True):
                 d.image_points = d.image_points + origin
             dets[side].append(d)
             log.info("%s %s: %s corners", side, seq.frame_name(i), 0 if d is None else len(d))
+    progress.update(len(seq_l), len(seq_l))
+    progress.check_cancel()
+    progress.phase("calibrating")
     opts = CalibrationOptions(
         distortion=cc.distortion,
         refine_stereo_intrinsics=cc.refine_stereo_intrinsics,
@@ -64,6 +74,7 @@ def run_calibration(cfg: ExperimentConfig, plot: bool = True):
         min_common_corners=cc.min_corners,
     )
     result = calibrate_stereo(dets["left"], dets["right"], sensor_l, sensor_r, opts)
+    progress.phase("writing")
     out = cfg.data_path(cfg.calibration_file)
     save_calibration(
         out,
@@ -121,7 +132,23 @@ def _poi_mask(cfg: ExperimentConfig, shape: tuple[int, int]) -> np.ndarray | Non
     return _read_mask_image(cfg.data_path(cfg.poi_mask), shape, "poi_mask")
 
 
-def run_stereo(cfg: ExperimentConfig, force: bool = False) -> Path:
+def _stereo_stage_hash(cfg: ExperimentConfig) -> str:
+    if cfg.calibration_file is None:
+        raise ValueError("experiment config needs calibration_file")
+    return config_hash(
+        {
+            "dic": cfg.dic.model_dump(mode="json"),
+            "recon": cfg.recon.model_dump(mode="json"),
+            "roi": cfg.roi,
+            "poi_mask": str(cfg.poi_mask),
+            "reference_frame": cfg.reference_frame,
+            "cameras": cfg.cameras.model_dump(mode="json"),
+            "calibration_sha256": _file_sha256(cfg.data_path(cfg.calibration_file)),
+        }
+    )
+
+
+def run_stereo(cfg: ExperimentConfig, force: bool = False, progress: ProgressReporter | None = None) -> Path:
     """Reference stage: POI grid on L0, stereo matching L0 -> R0, 3D reference shape.
 
     Writes `reference/*` and `calibration/*` into the experiment output file.
@@ -133,26 +160,18 @@ def run_stereo(cfg: ExperimentConfig, force: bool = False) -> Path:
     from .io.storage import ResultStore
     from .recon.shape import reference_shape
 
+    progress = ensure_progress(progress)
     if cfg.output_file is None or cfg.calibration_file is None:
         raise ValueError("experiment config needs output_file and calibration_file")
     out = cfg.results_path(cfg.output_file)
-    stage_hash = config_hash(
-        {
-            "dic": cfg.dic.model_dump(mode="json"),
-            "recon": cfg.recon.model_dump(mode="json"),
-            "roi": cfg.roi,
-            "poi_mask": str(cfg.poi_mask),
-            "reference_frame": cfg.reference_frame,
-            "cameras": cfg.cameras.model_dump(mode="json"),
-            "calibration_sha256": _file_sha256(cfg.data_path(cfg.calibration_file)),
-        }
-    )
+    stage_hash = _stereo_stage_hash(cfg)
     if out.exists() and not force:
         with ResultStore.open(out, "r") as store:
             if store.stage_done("stereo", stage_hash):
                 log.info("stereo stage up to date: %s", out)
                 return out
 
+    progress.phase("loading")
     calib = load_calibration(cfg.data_path(cfg.calibration_file))
     left, right, name_l, name_r = _read_reference(cfg)
     origin_l = np.asarray(cfg.cameras.left.sensor_origin, dtype=np.float64)
@@ -161,10 +180,14 @@ def run_stereo(cfg: ExperimentConfig, force: bool = False) -> Path:
     mask = _poi_mask(cfg, left.shape)
     pois = make_poi_grid(left.shape, cfg.dic.poi.subset_size, cfg.dic.poi.step, roi=roi, mask=mask)
     log.info("%d POIs", len(pois))
+    progress.check_cancel()
 
+    progress.phase("matching")
     sm = stereo_match(
         left, right, pois, calib, options_from_config(cfg.dic), cfg.dic.backend, mask, (origin_l, origin_r)
     )
+    progress.check_cancel()
+    progress.phase("reconstructing")
     shape = reference_shape(
         calib,
         pois.xy + origin_l,
@@ -175,6 +198,8 @@ def run_stereo(cfg: ExperimentConfig, force: bool = False) -> Path:
         cfg.recon.normal_radius_steps,
     )
 
+    progress.check_cancel()
+    progress.phase("writing")
     manifest = {"reference_left": name_l, "reference_right": name_r}
     with ResultStore.create(out, config_snapshot=cfg.snapshot(), input_manifest=manifest, overwrite=True) as store:
         store.write_calibration(calib)
@@ -289,6 +314,12 @@ def _ensure_temporal_datasets(
         )
 
 
+def _nanmedian_or_none(values: np.ndarray) -> float | None:
+    values = np.asarray(values, dtype=np.float64)
+    values = values[np.isfinite(values)]
+    return float(np.median(values)) if values.size else None
+
+
 def _update_previous_from_store(
     store,
     side: str,
@@ -318,8 +349,12 @@ def _update_previous_from_store(
     return out
 
 
-def run_temporal(cfg: ExperimentConfig, force: bool = False) -> Path:
-    """Run fixed-reference DIC for both cameras with frame-level checkpoints."""
+def run_temporal(cfg: ExperimentConfig, force: bool = False, progress: ProgressReporter | None = None) -> Path:
+    """Run fixed-reference DIC for both cameras with frame-level checkpoints.
+
+    Cancellation (``progress.check_cancel``) is honoured between frames, after the
+    pending rows are flushed and marked done, so the run can be resumed.
+    """
     from .core.status import Status
     from .core.types import ROI
     from .dic import shape_functions as sf
@@ -328,12 +363,14 @@ def run_temporal(cfg: ExperimentConfig, force: bool = False) -> Path:
     from .io.sync import pair_timestamps, sequence_timestamps
     from .io.storage import ResultStore
 
+    progress = ensure_progress(progress)
     if cfg.output_file is None or cfg.calibration_file is None:
         raise ValueError("experiment config needs output_file and calibration_file")
     out = cfg.results_path(cfg.output_file)
     if not out.exists():
         raise FileNotFoundError(f"stereo output does not exist: {out}; run --stage stereo first")
 
+    progress.phase("preparing")
     seq_l = open_sequence(cfg.data_path(cfg.cameras.left.path), cfg.cameras.left.pattern)
     seq_r = open_sequence(cfg.data_path(cfg.cameras.right.path), cfg.cameras.right.pattern)
     frame_ids = _selected_frame_indices(cfg, len(seq_l), len(seq_r))
@@ -423,7 +460,14 @@ def run_temporal(cfg: ExperimentConfig, force: bool = False) -> Path:
             store.flush()
             pending_rows.clear()
 
+        n_rows = len(frame_ids)
+        progress.phase("tracking")
         for row, frame_id in enumerate(frame_ids.tolist()):
+            try:
+                progress.check_cancel()
+            except JobCancelled:
+                _flush_pending()
+                raise
             if bool(done[row, 0]) and bool(done[row, 1]):
                 previous_xy_l = store.h5["dic/left/xy"][row]
                 previous_xy_r = store.h5["dic/right/xy"][row]
@@ -433,6 +477,7 @@ def run_temporal(cfg: ExperimentConfig, force: bool = False) -> Path:
                 previous_params_r = _update_previous_from_store(
                     store, "right", row, centers_r, previous_params_r, options.icgn.shape_order
                 )
+                progress.update(row + 1, n_rows)
                 continue
 
             image_l = seq_l.read(frame_id)
@@ -466,6 +511,18 @@ def run_temporal(cfg: ExperimentConfig, force: bool = False) -> Path:
             good_r = result_r.status == Status.OK
             if np.any(good_r):
                 previous_params_r[good_r] = result_r.params[good_r]
+            progress.update(row + 1, n_rows, f"frame {frame_id}")
+            progress.summary(
+                {
+                    "row": row,
+                    "frame": int(frame_id),
+                    "valid_left": float(good_l.mean()) if n_points else 0.0,
+                    "valid_right": float(good_r.mean()) if n_points else 0.0,
+                    "znssd_median": _nanmedian_or_none(
+                        np.concatenate([result_l.znssd[good_l], result_r.znssd[good_r]])
+                    ),
+                }
+            )
 
         _flush_pending()
         if bool(np.all(done[...])):
@@ -474,7 +531,21 @@ def run_temporal(cfg: ExperimentConfig, force: bool = False) -> Path:
 
 
 # ------------------------------------------------------------------- reconstruct
-def run_reconstruct(cfg: ExperimentConfig, force: bool = False) -> Path:
+def _reconstruct_stage_hash(cfg: ExperimentConfig, progress_attrs, temporal_shape: tuple[int, ...]) -> str:
+    return config_hash(
+        {
+            "stereo_hash": str(progress_attrs.get("stereo_config_hash", "")),
+            "temporal_hash": str(progress_attrs.get("temporal_config_hash", "")),
+            "stereo": cfg.dic.stereo.model_dump(mode="json"),
+            "recon": cfg.recon.model_dump(mode="json"),
+            "sensor_origins": [cfg.cameras.left.sensor_origin, cfg.cameras.right.sensor_origin],
+            "calibration_sha256": _file_sha256(cfg.data_path(cfg.calibration_file)),
+            "temporal_shape": list(temporal_shape),
+        }
+    )
+
+
+def run_reconstruct(cfg: ExperimentConfig, force: bool = False, progress: ProgressReporter | None = None) -> Path:
     """Triangulate every valid temporal correspondence and write 3D displacement."""
     from .calibration.report import load_calibration
     from .core.status import Status
@@ -482,6 +553,7 @@ def run_reconstruct(cfg: ExperimentConfig, force: bool = False) -> Path:
     from .recon.frames import to_local
     from .recon.triangulate import triangulate
 
+    progress = ensure_progress(progress)
     if cfg.output_file is None or cfg.calibration_file is None:
         raise ValueError("experiment config needs output_file and calibration_file")
     out = cfg.results_path(cfg.output_file)
@@ -495,17 +567,7 @@ def run_reconstruct(cfg: ExperimentConfig, force: bool = False) -> Path:
         xy_r = store.h5["dic/right/xy"]
         T, N, _ = xy_l.shape
         prog = store.h5.require_group("progress")
-        stage_hash = config_hash(
-            {
-                "stereo_hash": str(prog.attrs.get("stereo_config_hash", "")),
-                "temporal_hash": str(prog.attrs.get("temporal_config_hash", "")),
-                "stereo": cfg.dic.stereo.model_dump(mode="json"),
-                "recon": cfg.recon.model_dump(mode="json"),
-                "sensor_origins": [cfg.cameras.left.sensor_origin, cfg.cameras.right.sensor_origin],
-                "calibration_sha256": _file_sha256(cfg.data_path(cfg.calibration_file)),
-                "temporal_shape": list(xy_l.shape),
-            }
-        )
+        stage_hash = _reconstruct_stage_hash(cfg, prog.attrs, xy_l.shape)
         if not force and store.stage_done("reconstruct", stage_hash):
             return out
         same_run = (
@@ -549,8 +611,11 @@ def run_reconstruct(cfg: ExperimentConfig, force: bool = False) -> Path:
             store.invalidate_stage("rbm")
             prog.attrs["reconstruct_run_hash"] = stage_hash
 
+        progress.phase("triangulating")
         for k in range(T):
+            progress.check_cancel()  # every finished row is already flushed and marked done
             if bool(done[k]):
+                progress.update(k + 1, T)
                 continue
             left = xy_l[k]
             right = xy_r[k]
@@ -584,6 +649,8 @@ def run_reconstruct(cfg: ExperimentConfig, force: bool = False) -> Path:
             store.h5["quality/valid_mask"][k] = valid
             done[k] = True
             store.flush()
+            progress.update(k + 1, T, f"row {k}")
+            progress.summary({"row": k, "valid": float(valid.mean()) if N else 0.0})
         if bool(np.all(done[...])):
             store.mark_stage_done("reconstruct", stage_hash)
     return out
@@ -603,17 +670,31 @@ def _rbm_poi_mask(cfg: ExperimentConfig, xy_left_image: np.ndarray) -> np.ndarra
     return out
 
 
-def run_rbm(cfg: ExperimentConfig, force: bool = False) -> Path:
+def _rbm_stage_hash(cfg: ExperimentConfig, progress_attrs, xyz_shape: tuple[int, ...]) -> str:
+    rbm_mask_sha = _file_sha256(cfg.data_path(cfg.rbm_mask)) if cfg.rbm_mask is not None else ""
+    return config_hash(
+        {
+            "reconstruct_hash": str(progress_attrs.get("reconstruct_config_hash", "")),
+            "shape": list(xyz_shape),
+            "reference": "reference/points_3d",
+            "rbm_mask": str(cfg.rbm_mask),
+            "rbm_mask_sha256": rbm_mask_sha,
+        }
+    )
+
+
+def run_rbm(cfg: ExperimentConfig, force: bool = False, progress: ProgressReporter | None = None) -> Path:
     """Estimate and remove frame-wise rigid motion from reconstructed points."""
     from .core.status import Status
     from .io.storage import ResultStore
     from .recon.frames import to_local
     from .recon.rbm import compensate_trajectory
 
+    progress = ensure_progress(progress)
     if cfg.output_file is None:
         raise ValueError("experiment config has no output_file")
     out = cfg.results_path(cfg.output_file)
-    rbm_mask_sha = _file_sha256(cfg.data_path(cfg.rbm_mask)) if cfg.rbm_mask is not None else ""
+    progress.phase("loading")
     with ResultStore.open(out, "r+") as store:
         if "reconstruction/xyz" not in store.h5 or "reference/points_3d" not in store.h5:
             raise ValueError("reconstruction data is missing; run --stage reconstruct first")
@@ -623,15 +704,7 @@ def run_rbm(cfg: ExperimentConfig, force: bool = False) -> Path:
         status = store.read_array("reconstruction/status")
         T, N, _ = xyz.shape
         prog = store.h5.require_group("progress")
-        stage_hash = config_hash(
-            {
-                "reconstruct_hash": str(prog.attrs.get("reconstruct_config_hash", "")),
-                "shape": list(xyz.shape),
-                "reference": "reference/points_3d",
-                "rbm_mask": str(cfg.rbm_mask),
-                "rbm_mask_sha256": rbm_mask_sha,
-            }
-        )
+        stage_hash = _rbm_stage_hash(cfg, prog.attrs, xyz.shape)
         if not force and store.stage_done("rbm", stage_hash):
             return out
         ref_mask: np.ndarray | None = None
@@ -641,8 +714,12 @@ def run_rbm(cfg: ExperimentConfig, force: bool = False) -> Path:
                 raise ValueError(f"rbm_mask selects fewer than 3 POIs ({0 if ref_mask is None else int(ref_mask.sum())})")
         else:
             log.warning("rbm_mask is not configured; fitting rigid-body motion on all valid POIs")
+        progress.check_cancel()
+        progress.phase("fitting")
         compensation = compensate_trajectory(reference, xyz, valid_mask=status == Status.OK, reference_mask=ref_mask)
         disp_local = to_local(frames, compensation.displacement)
+        progress.check_cancel()
+        progress.phase("writing")
         _ensure_timeseries(store, "reconstruction/displacement_rbm", T, N, 3, dtype=np.float64, reset=True)
         _ensure_timeseries(store, "reconstruction/displacement_rbm_local", T, N, 3, dtype=np.float64, reset=True)
         _ensure_timeseries(store, "reconstruction/rbm_R", T, 3, 3, dtype=np.float64, reset=True)
@@ -658,4 +735,148 @@ def run_rbm(cfg: ExperimentConfig, force: bool = False) -> Path:
         if ref_mask is not None:
             store.write_array("quality/rbm_reference_mask", ref_mask)
         store.mark_stage_done("rbm", stage_hash)
+    return out
+
+
+# ------------------------------------------------------------------ stage status
+def _stage_record(state: str, detail: str = "", done_utc: str | None = None, fraction: float | None = None) -> dict:
+    return {"state": state, "detail": detail, "done_utc": done_utc, "fraction": fraction}
+
+
+def _calibration_status(cfg: ExperimentConfig) -> dict:
+    import json
+
+    if cfg.calibration_file is None:
+        return _stage_record("missing", "calibration_file is not configured")
+    path = cfg.data_path(cfg.calibration_file)
+    if not path.exists():
+        return _stage_record("missing")
+    if cfg.calibration is None:
+        return _stage_record("done", "external calibration file")
+    sidecar = path.with_suffix(".json")
+    try:
+        report = json.loads(sidecar.read_text(encoding="utf-8")).get("report", {}) if sidecar.exists() else {}
+    except (OSError, ValueError):
+        report = {}
+    stored = report.get("config_hash")
+    mtime = _mtime_utc(path)
+    if stored is None:
+        return _stage_record("done", "no config hash in the calibration report", mtime)
+    if stored == config_hash(cfg.calibration):
+        return _stage_record("done", "", mtime)
+    return _stage_record("stale", "calibration settings changed", mtime)
+
+
+def _mtime_utc(path: Path) -> str:
+    from datetime import datetime, timezone
+
+    return datetime.fromtimestamp(Path(path).stat().st_mtime, timezone.utc).isoformat()
+
+
+def stage_status(cfg: ExperimentConfig) -> dict[str, dict]:
+    """State of every pipeline stage for the current configuration (read-only).
+
+    Each entry is ``{"state", "detail", "done_utc", "fraction"}`` with ``state`` one of
+    ``missing`` (never run), ``done`` (finished with the current settings), ``stale``
+    (finished, but settings or an upstream stage changed), ``partial`` (interrupted,
+    resumable; ``fraction`` gives the finished share) or ``unknown`` (cannot be decided,
+    see ``detail``). Must not be called while a job is writing the results file.
+    """
+    from .io.storage import ResultStore
+
+    out: dict[str, dict] = {s: _stage_record("missing") for s in STAGES}
+    try:
+        out["calibrate"] = _calibration_status(cfg)
+    except Exception as exc:  # noqa: BLE001 - status must never raise
+        out["calibrate"] = _stage_record("unknown", str(exc))
+    if cfg.output_file is None:
+        for s in STAGES[1:]:
+            out[s] = _stage_record("missing", "output_file is not configured")
+        return out
+    try:
+        path = cfg.results_path(cfg.output_file)
+    except ValueError as exc:
+        for s in STAGES[1:]:
+            out[s] = _stage_record("unknown", str(exc))
+        return out
+    if not path.exists():
+        return out
+
+    def done_record(attrs, stage: str, current: str | None) -> dict:
+        utc = attrs.get(f"{stage}_done_utc")
+        utc = str(utc) if utc is not None else None
+        if not bool(attrs.get(f"{stage}_done", False)):
+            return _stage_record("missing")
+        if current is None or attrs.get(f"{stage}_config_hash") == current:
+            return _stage_record("done", "", utc)
+        return _stage_record("stale", "settings or inputs changed", utc)
+
+    def resumable(rec: dict, attrs, stage: str, current: str | None, done_ds) -> dict:
+        if rec["state"] != "missing" or current is None or done_ds is None:
+            return rec
+        if attrs.get(f"{stage}_run_hash") != current:
+            return rec
+        arr = np.asarray(done_ds[...])
+        rows = arr.all(axis=1) if arr.ndim == 2 else arr
+        frac = float(rows.mean()) if rows.size else 0.0
+        return _stage_record("partial", f"{int(rows.sum())}/{rows.size} frames", None, frac) if frac > 0 else rec
+
+    try:
+        with ResultStore.open(path, "r") as store:
+            h5 = store.h5
+            attrs = h5.require_group("progress").attrs if "progress" in h5 else {}
+
+            try:
+                cur = _stereo_stage_hash(cfg)
+            except Exception as exc:  # noqa: BLE001
+                cur, out["stereo"] = None, _stage_record("unknown", str(exc))
+            if cur is not None or out["stereo"]["state"] != "unknown":
+                out["stereo"] = done_record(attrs, "stereo", cur)
+
+            try:
+                from .io.sequence import open_sequence
+
+                seq_l = open_sequence(cfg.data_path(cfg.cameras.left.path), cfg.cameras.left.pattern)
+                seq_r = open_sequence(cfg.data_path(cfg.cameras.right.path), cfg.cameras.right.pattern)
+                frame_ids = _selected_frame_indices(cfg, len(seq_l), len(seq_r))
+                cur = _temporal_stage_hash(
+                    cfg, frame_ids, cfg.data_path(cfg.calibration_file), str(attrs.get("stereo_config_hash", ""))
+                )
+            except Exception as exc:  # noqa: BLE001
+                cur = None
+                out["temporal"] = _stage_record("unknown", str(exc))
+            if cur is not None:
+                rec = done_record(attrs, "temporal", cur)
+                ds = h5["progress/dic_frames_done"] if "progress/dic_frames_done" in h5 else None
+                out["temporal"] = resumable(rec, attrs, "temporal", cur, ds)
+
+            if "dic/left/xy" in h5:
+                cur = _reconstruct_stage_hash(cfg, attrs, h5["dic/left/xy"].shape)
+                rec = done_record(attrs, "reconstruct", cur)
+                ds = h5["progress/reconstruction_done"] if "progress/reconstruction_done" in h5 else None
+                out["reconstruct"] = resumable(rec, attrs, "reconstruct", cur, ds)
+
+            if "reconstruction/xyz" in h5:
+                out["rbm"] = done_record(attrs, "rbm", _rbm_stage_hash(cfg, attrs, h5["reconstruction/xyz"].shape))
+
+            for stage in ("analyze", "uncertainty"):
+                out[stage] = done_record(attrs, stage, None)
+    except Exception as exc:  # noqa: BLE001
+        for s in STAGES[1:]:
+            out[s] = _stage_record("unknown", f"cannot read results file: {exc}")
+        return out
+
+    # A finished stage whose upstream is not current is stale as well.
+    # rbm is optional for analyze, so analyze depends on reconstruct.
+    edges = (
+        ("calibrate", "stereo"),
+        ("stereo", "temporal"),
+        ("temporal", "reconstruct"),
+        ("reconstruct", "rbm"),
+        ("reconstruct", "analyze"),
+        ("stereo", "uncertainty"),
+    )
+    for up, down in edges:
+        if out[up]["state"] in ("stale", "missing", "partial") and out[down]["state"] == "done":
+            out[down] = _stage_record("stale", f"upstream stage {up} is not current", out[down]["done_utc"])
     return out

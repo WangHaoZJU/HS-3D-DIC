@@ -103,6 +103,30 @@ uv run python scripts/report_uncertainty.py \
   --pixel-sigma 0.01 --monte-carlo 1000
 ```
 
+## Web UI
+
+Browser UI for the whole processing chain (design: [docs/UI_Design.md](docs/UI_Design.md)).
+Server: FastAPI (`stereodic_server/`); frontend: React + shadcn/ui (`webui/`, based on
+[satnaing/shadcn-admin](https://github.com/satnaing/shadcn-admin)). Experiments created in
+the UI live in `<results_root>/experiments/<name>/`, outside the git checkout.
+
+```bash
+uv sync --extra web                                   # add --extra cuda on Linux
+cd webui && npm install && npm run build && cd ..     # once per frontend change
+uv run python -m stereodic_server                     # http://127.0.0.1:8000
+```
+
+From another machine, use an SSH tunnel (there is no login): `ssh -N -L 8000:127.0.0.1:8000 <linux-host>`.
+
+Development with hot reload: run `uv run python -m stereodic_server --reload` and
+`cd webui && npm run dev` (http://localhost:5173, proxies `/api` to port 8000).
+
+Synthetic demo data (calibration views + vibrating curved target, no camera needed):
+
+```bash
+uv run python scripts/make_demo_dataset.py            # writes to data_root / results_root
+```
+
 ## Tests
 
 ```bash
@@ -137,8 +161,10 @@ stereodic/
   calibration/ camera model, ChArUco detection, mono/stereo calibration, report
   dic/         B-spline interpolation, shape functions (0/1/2), IC-GN, SIFT/RG-DIC stereo matching, backends
   recon/       triangulation, normals and local frames, reference shape
-  pipeline.py  stage orchestration (calibrate, stereo, temporal, reconstruct)
+  pipeline.py  stage orchestration (calibrate, stereo, temporal, reconstruct, rbm), stage status
   vibration/   spectra, harmonic fit, ODS, FDD, FRF, damping, and MAC
+stereodic_server/  web UI backend (FastAPI, job queue, workspace)
+webui/         web UI frontend (React, shadcn/ui)
 benchmarks/    synthetic accuracy and throughput benchmarks
 scripts/       command-line entry points
 tests/         unit / integration / backends (cuda)

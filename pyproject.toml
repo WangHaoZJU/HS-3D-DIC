@@ -21,16 +21,18 @@ dependencies = [
 cuda = ["cupy-cuda12x>=13.3; sys_platform == 'linux'"]
 # 3D visualization / mode-shape animation
 viz = ["pyvista>=0.44"]
+# Web UI server (`uv sync --extra web`, see docs/UI_Design.md)
+web = ["fastapi>=0.115", "uvicorn[standard]>=0.30"]
 
 [dependency-groups]
-dev = ["pytest>=8.2"]
+dev = ["pytest>=8.2", "httpx>=0.27"]
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["stereodic"]
+packages = ["stereodic", "stereodic_server"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
