@@ -516,27 +516,29 @@ flowchart LR
 | 参考帧立体匹配 | CPU | 只算一次，RG-DIC 逻辑复杂 |
 | 标定、三角化、振动分析 | CPU | 计算量小 |
 
-### 8.3 CUDA 核设计
+### 8.3 CUDA 核设计（已实现：`dic/backends/cuda.py`）
 
-- 用 CuPy 管理显存和数据传输；IC-GN 写成 CUDA C 核（`icgn.cu`），通过 `cupy.RawModule` 加载。
-- **每个 POI 分配一个线程块**（例如 256 线程），块内线程分摊子区像素：
-  1. 每个线程按当前形函数计算变形后的位置，从样条系数中插值（三次样条 4×4、五次 6×6 个系数）；
-  2. 块内归约（FP64）求 $\bar g$、$\Delta g$；
-  3. 每个线程计算残差与 $J_q$ 的乘积，块内归约得到 6 维（二阶为 12 维）$J^Tr$；
-  4. 0 号线程用预存的 $H^{-1}$ 求 $\Delta p$，做 warp 的组合，判断是否收敛。
-- 参考数据（归一化后的 $f$、最速下降图像 $J$、$H^{-1}$）在参考阶段预计算并常驻显存。显存估算：31×31 子区、一阶形函数（$f$ 加 6 张最速下降图像）、FP32 存储时每个 POI 约 27 KB，2 万个 POI 约 0.55 GB。
-- 数据流水线：多线程读盘 → 锁页内存 → 异步拷贝 → GPU 预滤波 → IC-GN。用 CUDA stream 让读盘、拷贝和计算重叠。48 GB 显存可以缓存上千帧的样条系数。
-- **瓶颈预计在读盘**（数据集动辄几十 GB），应把原始数据放在本地 NVMe 上。
+- IC-GN 写成 CUDA C 核，嵌在 `cuda.py` 中，通过 `cupy.RawModule` 按（插值阶数, 形函数阶数）编译并缓存；支持 0/1/2 阶形函数、三次/五次样条。编译时不加 `--use_fast_math`。
+- **每个 POI 一个线程块（128 线程）**，整个 IC-GN 迭代在核内完成：每帧每台相机只启动一次核，迭代之间没有主机同步。每次迭代：
+  1. 每个线程按当前 warp 计算若干像素的变形位置（FP64），从 FP32 样条系数插值，写入共享内存，并归约 $\sum g$；
+  2. 第二遍归约 $\sum (g-\bar g)^2$ 与 $J^T(g-\bar g)$（FP64 累加，warp shuffle + 共享内存）；
+  3. 0 号线程计算 $b = J^T\tilde f - (\|\tilde f\|/\|\tilde g\|)\,J^T\tilde g$（$J^T\tilde f$ 每个 POI 预计算一次），$\Delta p=-H^{-1}b$，做 $W(p)\circ W(\Delta p)^{-1}$ 并判断收敛。
+- 参考数据（$\tilde f$、$J$ 为 FP32；中心、$\|\tilde f\|$、$H^{-1}$、$J^T\tilde f$ 为 FP64）在第一次求解时上传并缓存在 `ReferenceSubsets` 上，之后常驻显存。2.4 万 POI、31×31 子区、一阶时约 0.65 GB。
+- 目标帧：原始图像（uint16）上传后在 GPU 上做 FP64 预滤波（`cupyx.scipy.ndimage.spline_filter`），反射填充后转 FP32 存储（`CudaBSplineImage`）。每帧只传图像上去、传逐点结果回来。
+- 尚未做：读盘、拷贝与计算用 CUDA stream 重叠；左右相机并发。目前每帧耗时已低于读两张 1280×1024 TIFF 的时间量级，等真实数据确认瓶颈后再做。
 
-### 8.4 性能预估（待 M3 实测）
+### 8.4 性能实测（2026-11-24，Linux + RTX A6000，`benchmarks/bk_backends.py`）
 
-| 后端 | 粗略量级 |
-| --- | --- |
-| `numpy` | 只用于小规模测试 |
-| `numba`（16 核） | 2 万 POI × 1 万帧 × 2 台相机：约几十分钟到数小时 |
-| `cuda`（A6000） | 同上：预计为 `numba` 的数倍到一个数量级；实际多半受限于读盘 |
+1280×1024 合成散斑，24 012 个 POI（子区 31、步长 7），一阶形函数，五次样条，含每帧预滤波：
 
-以上是估算，不作为指标，最终以 `benchmarks/` 的实测为准。
+| 后端 | 每帧（单台相机） | 求解/秒 | 与 Numba 的位置差 P99 |
+| --- | ---: | ---: | ---: |
+| `numba`（16 线程） | 933 ms | 2.6 万 | — |
+| `cuda`（A6000） | **24.8 ms** | **97 万** | 4.1e-8 px |
+
+- 换算到 2 万 POI × 1 万帧 × 2 台相机：Numba 约 5 小时，CUDA 约 8 分钟（不含读盘）。
+- 演示数据（945 POI × 400 帧，`make_demo_dataset.py`）：时序阶段 CUDA 15 s、Numba 40 s，小规模时已受读盘和 HDF5 写入限制；三维位移与 Numba 结果最大相差 8e-4 µm。
+- 参考准备（`prepare_reference`，NumPy）每台相机约 50 s（2.4 万 POI），只做一次；需要时可以再移到 GPU。
 
 ## 9. 三维重建与位移
 
@@ -811,7 +813,7 @@ CINE/MRAW 等相机原生格式的读取器在确定相机型号后再写，需�
 - [x] `io`：TIFF 序列读取、HDF5 存储骨架
 - [x] `synth/speckle.py` + `render.py`（S1）
 - [x] pytest 框架，包括 `cuda` 标记
-- [ ] Linux 端 `uv sync --extra cuda` 与 GPU 测试
+- [x] Linux 端 `uv sync --extra cuda` 与 GPU 测试（2026-11-24，RTX A6000，全部测试通过）
 
 **出口：** Mac 和 Linux 上 `uv sync && uv run pytest` 都通过；Linux 上 CuPy 能识别 A6000。
 
@@ -873,7 +875,7 @@ B04：512×416 px，f = 2500 px（0.1 mm/px，距离约 250 mm），立体夹角
 
 - [x] TIFF 序列读取、时间戳加载、`sync.py`、`check_sync.py`
 - [x] `temporal.py` + Numba 后端，固定参考帧和逐帧初值
-- [x] CUDA 后端接口与 CuPy 求解路径；GPU 一致性测试待 RTX 环境执行
+- [x] CUDA 后端：RawModule IC-GN 核（每 POI 一个线程块、参考数据常驻显存、混合精度），GPU 一致性测试在 A6000 上通过（§8.3、§8.4）
 - [x] HDF5 帧级断点续算；`reconstruct` 阶段；`analyze.py`
 - [x] `spectrum.py`、单边谱和峰值识别
 - [ ] S6；实测 E3、E4（T4）
@@ -884,7 +886,7 @@ B04：512×416 px，f = 2500 px（0.1 mm/px，距离约 250 mm），立体夹角
 - 合成双目动态链路 `stereo → temporal → reconstruct` 已通过集成测试，所有有效 POI 均完成匹配和三角化。
 - HDF5 的 `progress/dic_frames_done` 和 `progress/reconstruction_done` 支持逐帧 flush 与恢复。
 - 频谱模块可从等间隔时间轴识别已知正弦频率；不规则时间轴会显式拒绝 FFT/Welch。
-- 当前环境 `auto` 后端为 Numba，CUDA 因缺少 CuPy/GPU 尚未进行硬件一致性验证。
+- Linux + A6000 上 `auto` 选择 CUDA；与 FP64 参考的位置差 P99 < 1e-7 px，速度约为 Numba 的 38 倍（§8.4）。
 
 **出口：** 真实叶片各阶频率与加速度计/LDV 的偏差 ≤ max(0.5%, Δf)；CUDA 与 CPU 位移差 P99 < 1e-4 px。
 

@@ -129,7 +129,7 @@ class TemporalTracker:
         base.status[sel] = retry.status[ok]
 
     def solve_frame(self, image: np.ndarray, p0: np.ndarray | None = None) -> DICBatchResult:
-        target = BSplineImage(image, self.options.interp_order)
+        target = self.solver.make_target(image, self.options.interp_order)
         if p0 is None:
             p0 = self._zero
         result = self.solver.solve(self.refs, target, p0)

@@ -66,60 +66,74 @@ def test_index_subset_matches_full_solve(images):
         np.testing.assert_allclose(part.xy, full.xy[idx], atol=1e-12)
 
 
-@pytest.mark.parametrize("shape_order", [0, 1])
-@pytest.mark.parametrize("interp_order", [3, 5])
-def test_cuda_algorithm_matches_numpy_on_xp(images, shape_order, interp_order):
-    """Exercise the exact vectorized CUDA solver code paths on CPU via NumPy,
-    including OOB, NaN initial guesses, chunking, and NOT_CONVERGED status."""
-    from stereodic.dic.backends.cuda import _solve_with_xp
+# ----------------------------------------------------------------------------- CUDA (BK)
+# Mixed precision (FP32 coefficients / J) puts a ~1e-6 px noise floor on each IC-GN update,
+# so the GPU tests use a convergence threshold above it; both solvers use the same options.
+CUDA_THR = 1e-5
 
+
+def _cuda_case(images, shape_order, interp_order, subset=21, step=9, thr=CUDA_THR, max_iter=100):
     ref_img, tgt_img = (BSplineImage(im, interp_order) for im in images)
-    opt = ICGNOptions(subset_size=21, shape_order=shape_order, convergence_threshold_px=1e-9, max_iterations=100)
-    centers = make_poi_grid(SHAPE, 21, 15, margin=10).xy
-    centers = np.vstack([centers, [[3.0, 50.0], [60.5, 60.25], [np.nan, np.nan]]])
-    ref_solver = ICGNSolver(opt, "numpy")
-    refs = ref_solver.prepare_reference(ref_img, centers)
-    p0 = sf.from_displacement(np.tile([0.3, -0.2], (len(centers), 1)), shape_order)
-    p0[0] = np.nan  # NaN guess must cleanly become OUT_OF_BOUNDS without invalid indexing
-
-    ra = ref_solver.solve(refs, tgt_img, p0)
-    rb = _solve_with_xp(np, refs, tgt_img, p0, chunk_size=7)
-    np.testing.assert_array_equal(ra.status, rb.status)
-    np.testing.assert_array_equal(ra.iterations, rb.iterations)
-    ok = ra.status == Status.OK
-    assert ok.any()
-    assert np.abs(ra.xy[ok] - rb.xy[ok]).max() < 1e-10
-    assert np.abs(ra.params[ok] - rb.params[ok]).max() < 1e-10
-    np.testing.assert_allclose(ra.znssd[ok], rb.znssd[ok], rtol=1e-6, atol=1e-12)
-
-    # Verify NOT_CONVERGED is reported (never silently left as Status.OK)
-    opt_nc = ICGNOptions(subset_size=21, shape_order=shape_order, convergence_threshold_px=1e-12, max_iterations=1)
-    refs_nc = ICGNSolver(opt_nc, "numpy").prepare_reference(ref_img, centers[:4])
-    p0_nc = np.zeros((4, sf.n_params(shape_order)))
-    ra_nc = ICGNSolver(opt_nc, "numpy").solve(refs_nc, tgt_img, p0_nc)
-    rb_nc = _solve_with_xp(np, refs_nc, tgt_img, p0_nc, chunk_size=2)
-    assert np.all(ra_nc.status == Status.NOT_CONVERGED)
-    np.testing.assert_array_equal(ra_nc.status, rb_nc.status)
-    np.testing.assert_array_equal(ra_nc.iterations, rb_nc.iterations)
-    np.testing.assert_allclose(ra_nc.xy, rb_nc.xy, atol=1e-10)
-
-
-@pytest.mark.cuda
-@pytest.mark.parametrize("shape_order", [0, 1])
-@pytest.mark.parametrize("interp_order", [3, 5])
-def test_cuda_matches_numpy(images, shape_order, interp_order):
-    """GPU consistency test (BK): CUDA backend must match FP64 NumPy within P99 < 1e-4 px."""
-    ref_img, tgt_img = (BSplineImage(im, interp_order) for im in images)
-    opt = ICGNOptions(subset_size=21, shape_order=shape_order, convergence_threshold_px=1e-9, max_iterations=100)
-    centers = make_poi_grid(SHAPE, 21, 9, margin=10).xy
-    centers = np.vstack([centers, [[3.0, 50.0], [60.5, 60.25]]])
+    opt = ICGNOptions(subset_size=subset, shape_order=shape_order, convergence_threshold_px=thr, max_iterations=max_iter)
+    centers = make_poi_grid(SHAPE, subset, step, margin=10).xy
+    centers = np.vstack([centers, [[3.0, 50.0], [60.5, 60.25], [np.nan, np.nan]]])  # OOB, non-integer, invalid
     a = ICGNSolver(opt, "numpy")
     b = ICGNSolver(opt, "cuda")
     refs = a.prepare_reference(ref_img, centers)
     p0 = sf.from_displacement(np.tile([0.3, -0.2], (len(centers), 1)), shape_order)
-    ra = a.solve(refs, tgt_img, p0)
-    rb = b.solve(refs, tgt_img, p0)
+    return a, b, refs, tgt_img, p0, images[1]
+
+
+@pytest.mark.cuda
+@pytest.mark.parametrize("shape_order", [0, 1, 2])
+@pytest.mark.parametrize("interp_order", [3, 5])
+def test_cuda_matches_numpy(images, shape_order, interp_order):
+    """GPU consistency (BK): P99 of the position difference to FP64 NumPy < 1e-4 px."""
+    a, b, refs, tgt, p0, _ = _cuda_case(images, shape_order, interp_order)
+    p0[0] = np.nan  # a NaN guess must become OUT_OF_BOUNDS cleanly
+    ra = a.solve(refs, tgt, p0)
+    rb = b.solve(refs, tgt, p0)
     np.testing.assert_array_equal(ra.status, rb.status)
     ok = ra.status == Status.OK
-    assert np.percentile(np.linalg.norm(ra.xy[ok] - rb.xy[ok], axis=1), 99) < 1e-4
-    np.testing.assert_allclose(ra.znssd[ok], rb.znssd[ok], rtol=1e-5, atol=1e-10)
+    assert ok.sum() >= len(ok) - 4
+    d = np.linalg.norm(ra.xy[ok] - rb.xy[ok], axis=1)
+    assert np.percentile(d, 99) < 1e-4 and d.max() < 1e-3
+    np.testing.assert_allclose(ra.znssd[ok], rb.znssd[ok], rtol=1e-3, atol=1e-6)
+    assert np.all(np.isnan(rb.xy[~ok]))
+    assert np.abs(ra.iterations[ok].astype(int) - rb.iterations[ok].astype(int)).max() <= 2
+
+
+@pytest.mark.cuda
+def test_cuda_gpu_target_indices_and_not_converged(images):
+    from stereodic.dic.backends.cuda import CudaBSplineImage
+
+    a, b, refs, tgt, p0, raw = _cuda_case(images, 1, 5)
+    # prefilter on the GPU == CPU model (FP32 storage)
+    gpu = CudaBSplineImage(raw, 5)
+    np.testing.assert_allclose(gpu.coeffs.get(), tgt.coeffs, rtol=0, atol=1e-3)
+    full = b.solve(refs, gpu, p0)
+    host = b.solve(refs, tgt, p0)
+    np.testing.assert_array_equal(full.status, host.status)
+    np.testing.assert_allclose(full.xy, host.xy, atol=1e-6)
+    idx = np.array([7, 2, 11])
+    part = b.solve(refs, gpu, p0[idx], indices=idx)
+    np.testing.assert_array_equal(part.status, full.status[idx])
+    np.testing.assert_allclose(part.xy, full.xy[idx], atol=1e-12)
+
+    one = ICGNOptions(subset_size=21, shape_order=1, convergence_threshold_px=1e-12, max_iterations=1)
+    refs1 = ICGNSolver(one, "numpy").prepare_reference(BSplineImage(images[0], 5), refs.centers[:4])
+    r_np = ICGNSolver(one, "numpy").solve(refs1, tgt, np.zeros((4, 6)))
+    r_cu = ICGNSolver(one, "cuda").solve(refs1, tgt, np.zeros((4, 6)))
+    assert np.all(r_np.status == Status.NOT_CONVERGED)
+    np.testing.assert_array_equal(r_cu.status, r_np.status)
+    np.testing.assert_array_equal(r_cu.iterations, r_np.iterations)
+    np.testing.assert_allclose(r_cu.xy, r_np.xy, atol=1e-4)
+
+
+@pytest.mark.cuda
+def test_cuda_large_subset(images):
+    a, b, refs, tgt, p0, _ = _cuda_case(images, 1, 3, subset=41, step=17)
+    ra, rb = a.solve(refs, tgt, p0), b.solve(refs, tgt, p0)
+    np.testing.assert_array_equal(ra.status, rb.status)
+    ok = ra.status == Status.OK
+    assert ok.any() and np.abs(ra.xy[ok] - rb.xy[ok]).max() < 1e-4

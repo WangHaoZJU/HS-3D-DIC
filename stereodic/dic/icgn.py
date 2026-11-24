@@ -227,6 +227,18 @@ class ICGNSolver:
     def prepare_reference(self, ref: BSplineImage, centers: np.ndarray) -> ReferenceSubsets:
         return prepare_reference(ref, centers, self.options)
 
+    def make_target(self, image: np.ndarray, interp_order: int):
+        """Interpolation model of a target frame for this backend.
+
+        The CUDA backend prefilters on the GPU and keeps the coefficients there
+        (`backends.cuda.CudaBSplineImage`); the CPU backends use `BSplineImage`.
+        """
+        if self.backend == "cuda":
+            from .backends.cuda import make_target
+
+            return make_target(image, interp_order)
+        return BSplineImage(image, interp_order)
+
     def solve(
         self,
         refs: ReferenceSubsets,

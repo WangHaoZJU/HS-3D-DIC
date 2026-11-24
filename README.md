@@ -10,10 +10,10 @@ Python package: `stereodic`. Technical design: [docs/StereoDIC_Technical_Design.
 
 | Milestone | Scope | State |
 | --- | --- | --- |
-| M0 | Repo skeleton, config, types, TIFF reader, HDF5 store, synthetic speckle | done (Linux GPU check pending) |
+| M0 | Repo skeleton, config, types, TIFF reader, HDF5 store, synthetic speckle | done |
 | M1 | 2D DIC core (B-spline, IC-GN, Numba), benchmarks B01/B03 | done |
 | M2 | Calibration (ChArUco), 2nd-order IC-GN, stereo matching (SIFT + RG-DIC), triangulation, reference shape, B04 | done (real-data E1/E2 pending) |
-| M3 | Fixed-reference temporal DIC, reconstruction, sync, spectra, CUDA path | done (GPU/E3 validation pending) |
+| M3 | Fixed-reference temporal DIC, reconstruction, sync, spectra, CUDA path | done (CUDA validated on A6000; E3 pending) |
 | M4 | Harmonic fit, ODS, FDD, FRF, damping, MAC, rigid-body compensation | done (LDV/FEM validation pending) |
 | M5 | Uncertainty propagation, Monte Carlo checks, and noise-floor statistics | in progress (hardware covariance pending) |
 
@@ -141,6 +141,7 @@ uv run pytest -m cuda      # GPU tests (Linux)
 uv run python -m benchmarks.b01_subpixel_bias [--quick] [--diameter 4]   # sub-pixel bias curve
 uv run python -m benchmarks.b03_subset_size [--quick] [--interp 5]       # error vs subset size, throughput
 uv run python -m benchmarks.b04_stereo_s4 [--quick]                      # S4: stereo shape + 3D rigid motion
+uv run python -m benchmarks.bk_backends [--quick]                        # BK: temporal backends, speed and agreement
 ```
 
 Results (CSV/PNG) go to `results/benchmarks/` (git-ignored).
