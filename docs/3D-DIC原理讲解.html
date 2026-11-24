@@ -1,0 +1,494 @@
+<title>3D-DIC 原理</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;700&family=Noto+Serif+SC:wght@600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<script>
+window.MathJax = {
+  tex: { inlineMath: [['\\(', '\\)']], displayMath: [['\\[', '\\]']] },
+  svg: { fontCache: 'global' },
+  options: { skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code'] }
+};
+</script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3.2.2/es5/tex-svg.js" defer></script>
+<style>
+/* Layout: sticky table of contents on the left, one reading column (~70ch); stacks to one column on phones. */
+:root {
+  --bg: #f6f7f9;
+  --paper: #ffffff;
+  --ink: #1b2330;
+  --muted: #5a6577;
+  --rule: #dde2ea;
+  --accent: #2f55b8;      /* cobalt: calibration-target ink */
+  --accent-soft: #e6ecfa;
+  --warn: #a5541a;
+  --warn-soft: #fbefe5;
+  --code-bg: #eef1f6;
+  --f-display: "Noto Serif SC", "Songti SC", "SimSun", serif;
+  --f-body: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  --f-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #12161d; --paper: #181d26; --ink: #e3e7ee; --muted: #9aa5b6; --rule: #2a313d;
+    --accent: #8aa8ff; --accent-soft: #1f2a45; --warn: #f0a46a; --warn-soft: #34261b; --code-bg: #212835;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #12161d; --paper: #181d26; --ink: #e3e7ee; --muted: #9aa5b6; --rule: #2a313d;
+  --accent: #8aa8ff; --accent-soft: #1f2a45; --warn: #f0a46a; --warn-soft: #34261b; --code-bg: #212835;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body {
+  background: var(--bg); color: var(--ink); font-family: var(--f-body);
+  font-size: 16px; line-height: 1.78;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+.shell { max-width: 1120px; margin: 0 auto; display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 48px; padding-block: 32px 80px; }
+nav.toc { position: sticky; top: calc(env(safe-area-inset-top, 0px) + 24px); align-self: start; font-size: 13.5px; line-height: 1.6; }
+nav.toc .label { font-size: 11px; letter-spacing: .12em; color: var(--muted); text-transform: uppercase; margin-bottom: 8px; }
+nav.toc ol { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; counter-reset: toc; }
+nav.toc li { counter-increment: toc; }
+nav.toc a { color: var(--muted); text-decoration: none; display: block; padding: 2px 0 2px 10px; border-left: 2px solid transparent; }
+nav.toc a::before { content: counter(toc) ". "; font-family: var(--f-mono); font-size: 11.5px; }
+nav.toc a:hover, nav.toc a:focus-visible { color: var(--accent); border-left-color: var(--accent); outline: none; }
+main { min-width: 0; }
+.hero { padding-bottom: 28px; border-bottom: 1px solid var(--rule); margin-bottom: 8px; }
+.hero canvas { width: 100%; height: 88px; display: block; border-radius: 6px; margin-bottom: 22px; }
+.eyebrow { font-size: 12px; letter-spacing: .14em; color: var(--accent); text-transform: uppercase; font-weight: 500; }
+h1 { font-family: var(--f-display); font-size: clamp(30px, 4.6vw, 42px); line-height: 1.25; margin: 6px 0 12px; text-wrap: balance; }
+.lede { font-size: 17.5px; color: var(--muted); max-width: 68ch; margin: 0; }
+section { padding-top: 36px; }
+h2 { font-family: var(--f-display); font-size: 25px; line-height: 1.35; margin: 0 0 14px; text-wrap: balance; display: flex; gap: 12px; align-items: baseline; }
+h2 .n { font-family: var(--f-mono); font-size: 14px; color: var(--accent); font-weight: 500; }
+h3 { font-size: 18px; margin: 26px 0 8px; font-weight: 700; }
+p, ul, ol { max-width: 70ch; }
+p { margin: 10px 0; }
+ul, ol { padding-left: 1.3em; margin: 10px 0; }
+li { margin: 4px 0; }
+a { color: var(--accent); text-underline-offset: 3px; }
+strong { font-weight: 700; }
+code { font-family: var(--f-mono); font-size: .88em; background: var(--code-bg); padding: 1px 5px; border-radius: 4px; }
+.math { overflow-x: auto; overflow-y: hidden; max-width: 70ch; padding: 4px 0; }
+mjx-container[display="true"] { margin: .7em 0 !important; }
+.note, .warn { max-width: 70ch; border-radius: 8px; padding: 12px 16px; margin: 16px 0; font-size: 15px; }
+.note { background: var(--accent-soft); }
+.warn { background: var(--warn-soft); }
+.note .tag, .warn .tag { font-size: 11.5px; letter-spacing: .1em; font-weight: 700; display: block; margin-bottom: 2px; }
+.note .tag { color: var(--accent); }
+.warn .tag { color: var(--warn); }
+.table-wrap { overflow-x: auto; margin: 14px 0; max-width: 100%; }
+table { border-collapse: collapse; font-size: 14.5px; min-width: 560px; width: 100%; background: var(--paper); }
+th, td { text-align: left; vertical-align: top; padding: 9px 12px; border-bottom: 1px solid var(--rule); }
+th { font-weight: 700; font-size: 13px; color: var(--muted); background: var(--bg); }
+td:first-child { font-weight: 500; white-space: nowrap; }
+td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+figure { margin: 18px 0; max-width: 100%; }
+figure .frame { background: var(--paper); border: 1px solid var(--rule); border-radius: 8px; padding: 14px; overflow-x: auto; }
+figcaption { font-size: 13.5px; color: var(--muted); margin-top: 8px; max-width: 70ch; }
+svg text { font-family: var(--f-body); }
+.svg-ink { fill: var(--ink); } .svg-muted { fill: var(--muted); } .svg-accent { fill: var(--accent); }
+.stroke-ink { stroke: var(--ink); } .stroke-muted { stroke: var(--muted); } .stroke-accent { stroke: var(--accent); } .stroke-warn { stroke: var(--warn); }
+pre.mermaid { background: var(--paper); border: 1px solid var(--rule); border-radius: 8px; padding: 14px; overflow-x: auto; }
+.refs li { margin: 8px 0; font-size: 14.5px; }
+.refs .why { color: var(--muted); display: block; }
+footer { margin-top: 56px; padding-top: 16px; border-top: 1px solid var(--rule); font-size: 13px; color: var(--muted); }
+@media (max-width: 880px) {
+  .shell { grid-template-columns: minmax(0, 1fr); gap: 0; padding-block: 20px 60px; }
+  nav.toc { position: static; margin-bottom: 8px; padding: 14px 0; border-bottom: 1px solid var(--rule); }
+  nav.toc ol { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; } }
+html { scroll-behavior: smooth; }
+section { scroll-margin-top: 16px; }
+</style>
+
+<div class="shell">
+  <nav class="toc" aria-label="目录">
+    <div class="label">目录</div>
+    <ol>
+      <li><a href="#compare">先对照双目视觉</a></li>
+      <li><a href="#pipeline">整条链路</a></li>
+      <li><a href="#camera">相机模型与标定</a></li>
+      <li><a href="#speckle">散斑：人造纹理</a></li>
+      <li><a href="#subset">子区与形函数</a></li>
+      <li><a href="#criterion">相关准则</a></li>
+      <li><a href="#subpixel">亚像素：插值与 IC-GN</a></li>
+      <li><a href="#init">初值与 RG-DIC</a></li>
+      <li><a href="#stereo">左右匹配</a></li>
+      <li><a href="#temporal">时序跟踪</a></li>
+      <li><a href="#triangulate">三角化与位移</a></li>
+      <li><a href="#errors">误差从哪来</a></li>
+      <li><a href="#vibration">振动测量专题</a></li>
+      <li><a href="#code">对应到项目代码</a></li>
+      <li><a href="#reading">推荐阅读</a></li>
+    </ol>
+  </nav>
+
+  <main>
+    <header class="hero">
+      <canvas id="speckle" aria-hidden="true"></canvas>
+      <div class="eyebrow">Stereo Digital Image Correlation</div>
+      <h1>从双目视觉到 3D-DIC</h1>
+      <p class="lede">3D-DIC 可以理解为三件事的组合：双目视觉的几何（标定和三角化）、数字图像相关的亚像素子区匹配、以及沿时间轴对同一批物质点的跟踪。第一件你已经熟悉，这份讲解把重点放在后两件，以及它们为什么能把精度推到 0.01 px 量级。</p>
+    </header>
+
+    <!-- 1 -->
+    <section id="compare">
+      <h2><span class="n">01</span>先对照你熟悉的双目视觉</h2>
+      <p>两者用同一套几何：针孔相机、畸变模型、外参、三角化。差别在于<strong>要解决的问题</strong>不同。双目视觉通常要的是“这一帧场景的深度”，3D-DIC 要的是“物体表面上某个固定的点，从参考时刻到现在移动了多少”。这个目标的差别决定了下面几乎所有设计选择。</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>方面</th><th>常见双目立体视觉</th><th>3D-DIC</th></tr></thead>
+          <tbody>
+            <tr><td>输出</td><td>深度图或点云，每帧独立</td><td>物质点的三维坐标、位移随时间变化，再求应变和振动</td></tr>
+            <tr><td>纹理</td><td>依赖场景自然纹理，弱纹理区靠平滑先验补</td><td>人工喷涂随机散斑，保证每个小窗口都能唯一匹配</td></tr>
+            <tr><td>匹配方式</td><td>先极线校正，再沿水平线做一维视差搜索（BM、SGM），亚像素靠抛物线拟合代价曲线</td><td>在原始图像上做二维子区匹配，用形函数描述子区变形，迭代优化到收敛</td></tr>
+            <tr><td>窗口模型</td><td>窗口整体平移（默认表面正对相机）</td><td>窗口可以平移、拉伸、剪切、弯曲（一阶或二阶形函数）</td></tr>
+            <tr><td>典型精度</td><td>视差误差约 0.1–1 px</td><td>位移随机误差约 0.01 px，系统误差可压到 0.001 px 量级</td></tr>
+            <tr><td>时间维度</td><td>帧与帧之间通常不建立对应</td><td>每台相机都把当前帧和固定参考帧匹配，点的身份始终不变</td></tr>
+            <tr><td>空间正则</td><td>全局能量（平滑项）是核心</td><td>局部 DIC 每个点独立求解，不加平滑；全局 DIC 用有限元网格整体求解</td></tr>
+            <tr><td>标定要求</td><td>重投影误差约 0.1–0.5 px 常可接受</td><td>位移是两次三角化之差，对标定很敏感，常要求 0.02–0.05 px</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>还有一个容易忽略的点：<strong>2D-DIC 为什么不够</strong>。单相机时，物体沿视线方向移动 \(\Delta z\)，像会整体缩放，看起来像面内应变 \(\varepsilon \approx \Delta z / Z\)（\(Z\) 是物距）。物距 250 mm、离面移动 0.25 mm，就会产生 1000 µε 的假应变。叶片振动以离面为主，所以必须用两台相机把离面分量真正解出来。</p>
+    </section>
+
+    <!-- 2 -->
+    <section id="pipeline">
+      <h2><span class="n">02</span>整条链路</h2>
+      <p>下面是一次振动测量的完整流程。中间那条“参考帧左右匹配只做一次、之后每台相机只和自己的参考帧比”的结构，是 3D-DIC 和逐帧双目重建最大的区别。</p>
+      <pre class="mermaid">
+flowchart LR
+  CAL["标定<br/>内参 K、畸变 D<br/>外参 R、t"] --> TRI
+  L0["左参考帧 L0<br/>布置 POI 网格"] -->|"立体 DIC<br/>二阶形函数，只做一次"| R0["右参考帧 R0<br/>得到对应点"]
+  L0 -->|"时序 DIC<br/>每帧 vs 固定参考"| Lt["左当前帧 Lt"]
+  R0 -->|"时序 DIC<br/>每帧 vs 固定参考"| Rt["右当前帧 Rt"]
+  Lt --> TRI["三角化<br/>X_t"]
+  Rt --> TRI
+  TRI --> U["位移 U = X_t − X_0<br/>局部坐标、刚体补偿"]
+  U --> VIB["频率、振幅、相位<br/>ODS、模态"]
+      </pre>
+      <p>和你熟悉的流程对照：标定、三角化几乎一样；新增的是两种匹配（左右之间、时间前后），它们用的是同一个亚像素算法，只是参考图和目标图不同。</p>
+    </section>
+
+    <!-- 3 -->
+    <section id="camera">
+      <h2><span class="n">03</span>相机模型与标定</h2>
+      <p>这部分和双目视觉相同：针孔投影加镜头畸变。</p>
+      <div class="math">\[ \lambda \begin{bmatrix} u \\ v \\ 1 \end{bmatrix} = K\,\bigl[\,R \mid t\,\bigr] \begin{bmatrix} X \\ 1 \end{bmatrix}, \qquad K = \begin{bmatrix} f_x & 0 & c_x \\ 0 & f_y & c_y \\ 0 & 0 & 1 \end{bmatrix} \]</div>
+      <p>畸变在归一化坐标 \((x, y)\) 上施加，常用 Brown–Conrady 模型，\(r^2 = x^2 + y^2\)：</p>
+      <div class="math">\[ x_d = x\,(1 + k_1 r^2 + k_2 r^4 + k_3 r^6) + 2p_1 xy + p_2 (r^2 + 2x^2) \]</div>
+      <p>两台相机之间的外参写成 \(X_R = R_{RL} X_L + t_{RL}\)，世界坐标系一般就取左相机坐标系。标定方法也一样：张正友平面标定，再用双目光束法平差联合优化。</p>
+      <h3>DIC 对标定的特殊要求</h3>
+      <ul>
+        <li><strong>精度门槛更高。</strong>商业系统（GOM ARAMIS 等）通常要求标定偏差在 0.02–0.025 px 以内（Beberniss &amp; Ehrhardt 2017）。原因是位移是两次三角化之差，标定的尺度误差会按比例进入位移。</li>
+        <li><strong>重投影误差小不等于三维准。</strong>DIC 常用长焦镜头，视场窄，主点和高阶畸变本来就定不准，而它们的误差会被外参吸收。判断标定好坏要看三维量：用位移台做已知平移，比较测得的位移（iDICs 指南也把“刚体平移不应产生应变”作为标定检查项）。</li>
+        <li><strong>在原始畸变图像上匹配。</strong>双目视觉通常先做极线校正再匹配。DIC 不在校正图上做精细匹配，因为校正需要对整幅图重采样，插值会带来亚像素偏差。DIC 的做法是在原图上匹配，只在三角化时把带畸变的投影模型用进去。</li>
+        <li><strong>标定后不能动相机和镜头。</strong>对焦、光圈、相机位置、录制窗口（ROI）都必须和正式测量一致。高速相机为了提帧率常只录传感器的一部分，这时要把 ROI 原点加回去，换算到标定时的全幅坐标。</li>
+      </ul>
+    </section>
+
+    <!-- 4 -->
+    <section id="speckle">
+      <h2><span class="n">04</span>散斑：为什么要人造纹理</h2>
+      <p>双目视觉在白墙上会失效，因为窗口里没有可区分的信息。DIC 干脆在表面喷一层随机黑白散斑，让任意一个 21–51 px 的小窗口都有足够的灰度变化，而且在附近找不到和它相似的第二个窗口。</p>
+      <ul>
+        <li><strong>散斑尺寸约 3–5 px。</strong>太小（1–2 px）会出现空间混叠，相机像素记录不下散斑的形状，插值重建不准，亚像素偏差变大；太大则一个子区里散斑太少，需要更大的子区，空间分辨率下降。</li>
+        <li><strong>对比度要高、不饱和。</strong>灰度直方图应铺满动态范围但两端不顶格。饱和像素丢失信息，会让匹配产生偏差。</li>
+        <li><strong>随机而不是规则图案。</strong>规则图案会让多个位置的相关系数一样高，匹配可能跳到错误的周期上，还容易产生摩尔纹。</li>
+      </ul>
+      <p>散斑质量可以量化。子区内灰度梯度平方和（SSSIG）越大，噪声引起的位移误差越小，下面误差一节会用到它。</p>
+    </section>
+
+    <!-- 5 -->
+    <section id="subset">
+      <h2><span class="n">05</span>子区与形函数：窗口可以变形</h2>
+      <p>在参考图上以点 \((x_0, y_0)\) 为中心取一个 \((2M+1)\times(2M+1)\) 的方形子区。子区里每个像素相对中心的偏移记为 \((\Delta x, \Delta y)\)。双目视觉假设这个窗口在另一幅图里只是整体平移；DIC 允许它变形，变形规律由<strong>形函数</strong> \(W(\Delta x, \Delta y; p)\) 描述。</p>
+      <figure>
+        <div class="frame">
+          <svg viewBox="0 0 640 230" width="100%" role="img" aria-label="参考子区为正方形，变形后的子区为被拉伸、剪切和弯曲的四边形">
+            <g>
+              <text x="110" y="24" text-anchor="middle" class="svg-muted" font-size="13">参考图 f：正方形子区</text>
+              <rect x="40" y="45" width="140" height="140" fill="none" class="stroke-ink" stroke-width="1.6"/>
+              <g class="stroke-muted" stroke-width="0.6" opacity="0.7">
+                <line x1="75" y1="45" x2="75" y2="185"/><line x1="110" y1="45" x2="110" y2="185"/><line x1="145" y1="45" x2="145" y2="185"/>
+                <line x1="40" y1="80" x2="180" y2="80"/><line x1="40" y1="115" x2="180" y2="115"/><line x1="40" y1="150" x2="180" y2="150"/>
+              </g>
+              <circle cx="110" cy="115" r="4" class="svg-accent"/>
+              <text x="118" y="111" class="svg-accent" font-size="12">(x₀, y₀)</text>
+              <text x="110" y="208" text-anchor="middle" class="svg-muted" font-size="12">像素偏移 (Δx, Δy)</text>
+            </g>
+            <g>
+              <line x1="210" y1="115" x2="300" y2="115" class="stroke-accent" stroke-width="1.6"/>
+              <path d="M300 115 l-9 -5 v10 z" class="svg-accent"/>
+              <text x="255" y="104" text-anchor="middle" class="svg-accent" font-size="12">W(Δx, Δy; p)</text>
+            </g>
+            <g>
+              <text x="470" y="24" text-anchor="middle" class="svg-muted" font-size="13">目标图 g：变形后的子区</text>
+              <path d="M350 70 Q 430 50 520 62 Q 540 120 548 182 Q 455 196 372 200 Q 356 135 350 70 Z" fill="none" class="stroke-accent" stroke-width="1.8"/>
+              <g class="stroke-muted" stroke-width="0.6" opacity="0.7">
+                <path d="M392 63 Q 400 130 400 199" fill="none"/>
+                <path d="M436 57 Q 450 128 458 196" fill="none"/>
+                <path d="M480 58 Q 497 124 503 189" fill="none"/>
+                <path d="M355 103 Q 440 92 529 96" fill="none"/>
+                <path d="M359 136 Q 447 128 537 131" fill="none"/>
+                <path d="M364 168 Q 452 162 543 165" fill="none"/>
+              </g>
+              <circle cx="450" cy="129" r="4" class="svg-accent"/>
+              <text x="458" y="125" class="svg-accent" font-size="12">(x₀+u, y₀+v)</text>
+              <text x="450" y="222" text-anchor="middle" class="svg-muted" font-size="12">平移 + 拉伸 + 剪切 + 弯曲</text>
+            </g>
+          </svg>
+        </div>
+        <figcaption>形函数把参考子区的每个像素映射到目标图中的位置。中心点的位移 \((u, v)\) 是我们要的测量值，其余参数描述子区的形状变化，是“为了把中心点算准”而引入的。</figcaption>
+      </figure>
+      <p>常用三种阶数（参数顺序按本项目代码）：</p>
+      <div class="math">\[ \text{零阶：}\quad x' = x_0 + \Delta x + u,\qquad y' = y_0 + \Delta y + v \]</div>
+      <div class="math">\[ \text{一阶：}\quad x' = x_0 + \Delta x + u + u_x \Delta x + u_y \Delta y,\qquad y' = y_0 + \Delta y + v + v_x \Delta x + v_y \Delta y \]</div>
+      <div class="math">\[ \text{二阶：}\quad x' = x_0 + \Delta x + u + u_x \Delta x + u_y \Delta y + \tfrac12 u_{xx}\Delta x^2 + u_{xy}\Delta x\Delta y + \tfrac12 u_{yy}\Delta y^2 \]</div>
+      <p>零阶就是双目视觉里的窗口平移。一阶是仿射变换，对应均匀应变和小转动，6 个参数。二阶多出 6 个曲率项，共 12 个参数，能描述非均匀变形。</p>
+      <div class="note"><span class="tag">为什么阶数重要</span>形函数比真实变形“低一阶”时会产生系统误差（Schreier &amp; Sutton 2002 称为 undermatched shape function）。左右两台相机从不同角度看同一表面，同一块区域在两幅图里的形状差别是透视造成的非均匀变形，所以左右匹配要用二阶。本项目的 S4 合成测试里，一阶左右匹配误差 0.011 px，二阶降到 0.001 px，对应的深度误差从约 3 µm 降到约 0.2 µm。</div>
+    </section>
+
+    <!-- 6 -->
+    <section id="criterion">
+      <h2><span class="n">06</span>相关准则：怎样算“匹配得好”</h2>
+      <p>双目视觉常用 SAD、SSD 或 Census。DIC 最常用零均值归一化的两种准则，\(f\) 是参考子区灰度，\(g\) 是按形函数在目标图中取到的灰度：</p>
+      <div class="math">\[ C_{\text{ZNSSD}}(p) = \sum_{\Delta x, \Delta y} \left[ \frac{f - \bar f}{\Delta f} - \frac{g(W(p)) - \bar g}{\Delta g} \right]^2, \qquad \Delta f = \sqrt{\textstyle\sum (f - \bar f)^2} \]</div>
+      <div class="math">\[ C_{\text{ZNSSD}} = 2\,\bigl(1 - C_{\text{ZNCC}}\bigr) \]</div>
+      <p>两者等价（Liang 等 2022 也指出这一点）。零均值去掉亮度偏移，归一化去掉对比度缩放，所以对 \(g = a f + b\) 形式的光照变化不敏感。这在高速拍摄中很重要：两台相机的增益不同，曝光极短时灯光的闪烁也会让每帧亮度略有起伏。</p>
+      <p>ZNSSD 是一个可微的最小二乘目标，所以可以用高斯–牛顿法迭代求亚像素解；ZNCC 的取值在 \([-1, 1]\)，直观，常用于整像素搜索和质量判断（ZNCC 0.9 对应 ZNSSD 0.2）。</p>
+    </section>
+
+    <!-- 7 -->
+    <section id="subpixel">
+      <h2><span class="n">07</span>亚像素：插值与 IC-GN</h2>
+      <p>双目视觉的亚像素通常是对整像素代价曲线拟合抛物线，精度约 0.1 px。DIC 把形函数参数 \(p\) 当作连续未知数，直接最小化 ZNSSD。这需要两样东西：在非整数位置取灰度的插值，以及一个迭代求解器。</p>
+      <h3>插值</h3>
+      <p>形函数把像素映射到非整数位置，需要从离散图像重建出连续灰度。双线性插值不够用。常用三次或五次 B 样条：先对整幅图做一次预滤波得到样条系数，之后任意位置的灰度和梯度都能解析求出。</p>
+      <p>插值不完美会带来<strong>系统偏差</strong>，而且偏差随亚像素位置呈周期变化：在整像素和半像素处为零，在约 0.25 和 0.75 px 处最大（Schreier, Braasch &amp; Sutton 2000）。高阶插值能把这条“正弦曲线”压低。本项目的 B01 基准里，散斑 4 px 时三次样条最大偏差 0.0018 px，五次样条 0.00045 px。</p>
+      <h3>IC-GN：反向组合高斯–牛顿</h3>
+      <p>经典 DIC 用正向加性的牛顿–拉夫森法（Bruck 等 1989），每次迭代都要在目标图上重新求梯度和 Hessian。现在的标准做法是 IC-GN（Pan 等 2013，源自计算机视觉里 Baker &amp; Matthews 的 Lucas–Kanade 框架）。它的思路是把增量放到参考子区一侧：</p>
+      <div class="math">\[ \min_{\Delta p} \sum \left[ \frac{f\bigl(W(\Delta p)\bigr) - \bar f}{\Delta f} - \frac{g\bigl(W(p)\bigr) - \bar g}{\Delta g} \right]^2 \]</div>
+      <p>对 \(\Delta p\) 线性化后，增量为</p>
+      <div class="math">\[ \Delta p = -H^{-1} \sum \Bigl(\nabla f\,\frac{\partial W}{\partial p}\Bigr)^{\!T} \Bigl[ (f - \bar f) - \frac{\Delta f}{\Delta g}\,(g - \bar g) \Bigr], \qquad H = \sum \Bigl(\nabla f\,\frac{\partial W}{\partial p}\Bigr)^{\!T}\Bigl(\nabla f\,\frac{\partial W}{\partial p}\Bigr) \]</div>
+      <p>关键在于 \(H\) 只依赖参考子区的梯度，<strong>每个点只算一次、求逆一次</strong>，之后每一帧、每一次迭代都只需在目标图上采样灰度。时序匹配要对上万帧重复计算，这一点决定了算法能否用于高速振动测量。</p>
+      <p>更新规则是“反向组合”，不是简单相减：</p>
+      <div class="math">\[ W(p) \leftarrow W(p) \circ W(\Delta p)^{-1} \]</div>
+      <p>一阶形函数可以写成 3×3 齐次矩阵，组合就是矩阵乘法；二阶形函数可以提升为作用在 \((\Delta x^2, \Delta x\Delta y, \Delta y^2, \Delta x, \Delta y, 1)\) 上的 6×6 矩阵，再做同样的组合（Gao 等 2015）。收敛判据常取“子区四个角点的增量位移都小于 0.001 px”。</p>
+      <div class="note"><span class="tag">和双目视觉的关系</span>IC-GN 本质上就是视觉跟踪里的 Lucas–Kanade 图像配准。你可以把 DIC 的子区匹配理解为：在散斑这种理想纹理上，对每个小窗口单独做一次高精度的仿射或二次 Lucas–Kanade。</div>
+    </section>
+
+    <!-- 8 -->
+    <section id="init">
+      <h2><span class="n">08</span>初值与可靠性引导（RG-DIC）</h2>
+      <p>高斯–牛顿只在初值附近收敛，初值偏差一般要在几个像素以内。获取初值有三类方法：</p>
+      <ul>
+        <li><strong>整像素搜索。</strong>用 ZNCC 在一定范围内逐位置搜索（FFT 可加速），适合平移为主的情况。</li>
+        <li><strong>特征匹配。</strong>SIFT 等特征点在左右图之间匹配，用附近的特征点拟合局部仿射，作为种子点的初值。左右图透视差异大时比整像素搜索可靠。</li>
+        <li><strong>可靠性引导传播（RG-DIC，Pan 2009）。</strong>先把少数种子点算准，再按相关系数从好到坏的顺序，把已解点的形函数作为相邻点的初值，像洪水填充一样扩展到整个区域。每个点仍然独立做 IC-GN，传播只提供起点。</li>
+      </ul>
+      <p>RG-DIC 的好处是坏点不会污染好点：可靠的区域先算，难算的区域（反光、遮挡、边缘）最后才轮到，而且它们的失败不影响别处。</p>
+    </section>
+
+    <!-- 9 -->
+    <section id="stereo">
+      <h2><span class="n">09</span>左右匹配：只做一次</h2>
+      <p>在左参考图上布置规则的点网格（POI，例如步长 5 px），用上面的子区匹配找到每个点在右参考图里的对应位置。这一步就是“立体匹配”，但和双目视觉有三点不同：</p>
+      <ol>
+        <li>用二阶形函数处理两个视角之间的透视变形。</li>
+        <li>不做极线校正，在原图上匹配。极线约束只用来筛选初值和事后检查：三角化时左右射线应该几乎相交，重投影残差大的点说明匹配错了。</li>
+        <li>只在参考时刻做一次。得到的右图对应点位置是非整数，它们就是右相机时序跟踪的起点。</li>
+      </ol>
+      <p>这样做的结果是：左图第 \(i\) 个点和右图第 \(i\) 个点始终对应同一个物质点。后面任何一帧，只要两台相机各自把这个点跟踪住，就能三角化出它的三维位置。</p>
+    </section>
+
+    <!-- 10 -->
+    <section id="temporal">
+      <h2><span class="n">10</span>时序跟踪：固定参考帧</h2>
+      <p>双目视觉对每一帧单独重建，不知道第 100 帧的某个点和第 1 帧的哪个点是同一个物质点。DIC 用的是拉格朗日描述：始终跟踪同一组物质点。</p>
+      <ul>
+        <li>左相机把每一帧 \(L_t\) 都和 \(L_0\) 匹配，右相机把每一帧 \(R_t\) 都和 \(R_0\) 匹配。</li>
+        <li>上一帧的解只当作这一帧的初值，结果始终相对参考帧。</li>
+        <li>不能把帧间增量相加。每一步都有随机误差，累加 \(n\) 步后误差按 \(\sqrt n\) 增长，一万帧后漂移不可接受。固定参考帧让每一帧的误差都和第一帧一样大。</li>
+      </ul>
+      <p>时序匹配一般用一阶形函数就够了：同一台相机前后两帧之间的变形主要来自物体本身的运动，比左右视角差小得多。</p>
+      <div class="warn"><span class="tag">参考帧怎么选</span>参考帧要选模糊最小、表面最干净的时刻，常用激振开始前的静止帧。参考帧一旦有问题（运动模糊、反光），所有帧都会受影响。</div>
+    </section>
+
+    <!-- 11 -->
+    <section id="triangulate">
+      <h2><span class="n">11</span>三角化与位移</h2>
+      <p>三角化你已经熟悉：先用线性方法（DLT 或中点法）得到初值，再最小化两台相机上的重投影误差。DIC 里通常直接在带畸变的原始像素坐标上最小化：</p>
+      <div class="math">\[ X_i^t = \arg\min_X \sum_{c \in \{L, R\}} \bigl\| \pi_c(X) - p_{c,i}^t \bigr\|^2 \]</div>
+      <p>位移定义为同一物质点相对参考时刻的变化 \(U_i^t = X_i^t - X_i^0\)。之后通常还要：</p>
+      <ul>
+        <li><strong>转到局部坐标系。</strong>用参考形貌估计每点的法向，把位移分解成面内两个方向和离面方向。叶片振动主要看离面分量。</li>
+        <li><strong>扣除刚体运动。</strong>夹具或整台激振器会带着叶片整体晃动。在夹具或固定背景上也布置散斑点，逐帧拟合刚体变换并扣除，才是叶片相对叶根的弹性振动（Beberniss 2017 就用激振台面上的点扣除台面运动）。</li>
+        <li><strong>计算应变（可选）。</strong>对位移场求空间导数。DIC 应变的噪声比位移大得多，需要一定的“虚拟应变片”长度做平滑。</li>
+      </ul>
+      <h3>为什么离面误差更大</h3>
+      <p>两台相机对称布置、立体夹角为 \(2\alpha\) 时，面内方向两台相机的观测相互加强，离面方向只能靠两条视线的夹角来分辨。粗略估计：</p>
+      <div class="math">\[ \sigma_{\text{离面}} \approx \frac{\sigma_{\text{面内}}}{\tan\alpha} \]</div>
+      <p>夹角 20°（\(\alpha = 10°\)）时约 5.7 倍，本项目 S4 合成测试实测约 4.6 倍。夹角太小离面误差大，太大则两幅图差别大、匹配难，所以常用 15–35°（iDICs 指南），Beberniss 的经验是 25° 左右最好。</p>
+    </section>
+
+    <!-- 12 -->
+    <section id="errors">
+      <h2><span class="n">12</span>误差从哪来</h2>
+      <p>DIC 的误差分为随机误差（噪声）和系统误差（偏差）。两者对振动测量的影响不同：随机误差决定能测到的最小振幅，系统误差会直接让振幅、相位算错。</p>
+      <h3>随机误差</h3>
+      <p>灰度噪声 \(\sigma_n\) 引起的位移标准差近似为（Pan 等 2008）</p>
+      <div class="math">\[ \sigma_u \approx \frac{\sqrt{2}\,\sigma_n}{\sqrt{\sum_{\text{子区}} \bigl(\partial f / \partial x\bigr)^2}} \]</div>
+      <p>分母就是前面提到的 SSSIG。所以要么降低噪声（更多光、更大的满阱容量），要么增大子区或提高散斑对比度。子区越大噪声越小，但空间分辨率越低，振型细节会被抹平。</p>
+      <h3>系统误差</h3>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>来源</th><th>表现</th><th>对策</th></tr></thead>
+          <tbody>
+            <tr><td>插值</td><td>随亚像素位置周期变化的偏差</td><td>高阶 B 样条，散斑不要太小</td></tr>
+            <tr><td>形函数阶数不够</td><td>非均匀变形处偏差</td><td>左右匹配用二阶；时序看变形梯度</td></tr>
+            <tr><td>标定</td><td>位移尺度误差、离面与面内耦合</td><td>高精度标定板，位移台验证</td></tr>
+            <tr><td>左右不同步</td><td>运动中的点在两幅图里位置不一致，三角化出错</td><td>硬件触发同步，检查时间戳</td></tr>
+            <tr><td>运动模糊</td><td>曝光时间内散斑被拖长，对比度降低</td><td>缩短曝光，增强照明</td></tr>
+            <tr><td>热气流、镜头热漂移</td><td>低频的伪位移</td><td>挡风、预热相机、远离热源</td></tr>
+            <tr><td>相机自身振动</td><td>特定频率的伪峰（风扇等）</td><td>静态实验测噪声谱，减振</td></tr>
+            <tr><td>照明频闪</td><td>电源频率倍数处的伪峰</td><td>直流 LED 照明</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>最后两项在振动测量里尤其要注意。Beberniss 和 Ehrhardt 用 DIC 拍摄一块固定在隔振台上、本身几乎不动的钢块，发现了白炽灯和荧光灯造成的 120 Hz 峰（美国电网 60 Hz），以及高速相机散热风扇造成的 134、139、386 Hz 峰。这些峰在频谱里和真实模态一模一样，只有做静态噪声实验才能识别出来。</p>
+      <h3>测量分辨率与视场成正比</h3>
+      <p>DIC 的误差以像素计，换成物理尺寸要乘以每像素对应的毫米数。视场越大，每个像素代表的尺寸越大，分辨率越差。Beberniss 的数据是：约 450 mm 的测量体积下离面分辨率约 10 µm，缩小到约 45 mm 时约 1 µm。要提高灵敏度只能缩小视场或换更高分辨率的相机，这和“全场测量”的初衷是矛盾的，需要按最小关心振幅来折中。</p>
+    </section>
+
+    <!-- 13 -->
+    <section id="vibration">
+      <h2><span class="n">13</span>振动测量专题</h2>
+      <h3>时间混叠：相机没有抗混叠滤波器</h3>
+      <p>数据采集卡在采样前有模拟低通滤波器，高速相机没有。高于奈奎斯特频率 \(f_s/2\) 的振动会折叠到低频：</p>
+      <div class="math">\[ f_{\text{观测}} = \bigl| f - k f_s \bigr|, \quad k \text{ 取使结果落在 } [0, f_s/2] \text{ 的整数} \]</div>
+      <p>Beberniss 的实验：用 615 Hz 正弦激励，相机 1000 fps 拍摄，频谱上出现 385 Hz（\(1000 - 615\)）和 230 Hz（二次谐波 1230 Hz 折叠而来）两个峰，看起来和真实模态无法区分。识别方法是改变帧率重拍：真实峰的位置不变，混叠峰会移动。</p>
+      <p>混叠不全是坏事。定频激励时频率已知，可以有意用低于奈奎斯特要求的帧率采样，再在已知频率上做最小二乘谐波拟合，照样能得到振幅和相位（欠采样拟合）。前提是确切知道激励频率，并且没有其他频率成分折叠到同一位置。</p>
+      <h3>高频振动的位移很小</h3>
+      <p>同样的速度或加速度水平下，位移振幅随频率下降：\(A = V/(2\pi f) = a/(2\pi f)^2\)。高阶模态的位移可能只有微米甚至纳米量级，低于 DIC 的噪声底。Beberniss 的模态试验中，激光测振仪在低激励下测到约 10 nm 的响应，DIC 完全看不到，必须把激励加大到接近非线性的边缘才能测。叶片的高阶模态会遇到同样的问题。</p>
+      <h3>曝光、帧率、记录长度</h3>
+      <ul>
+        <li><strong>曝光时间</strong>决定运动模糊。振幅 \(A\)（像素）、频率 \(f\) 的正弦振动，最大像面速度为 \(2\pi f A\)，曝光 \(t_e\) 内最多移动 \(2\pi f A t_e\) 像素。例如 5 px、500 Hz、20 µs 时约 0.3 px，应尽量让它远小于散斑尺寸。</li>
+        <li><strong>帧率</strong>决定能直接分析的最高频率（\(f_s/2\)），也决定曝光时间的上限。</li>
+        <li><strong>记录长度</strong> \(T\) 决定频率分辨率（约 \(1/T\)），以及宽带激励时 PSD 能做多少次平均。高帧率下相机内存有限，记录长度会被压缩，这是高速 DIC 的老矛盾。</li>
+        <li><strong>同步误差</strong> \(\Delta t\) 在频率 \(f\) 处造成相位误差 \(2\pi f \Delta t\)：1 kHz 时 1 µs 对应 0.36°。</li>
+      </ul>
+      <h3>从位移到模态参数</h3>
+      <ul>
+        <li><strong>宽带激励</strong>（白噪声、锤击）：对全场位移做功率谱，把所有点的谱平均后找峰值（直接对位移求平均会让反相区域相互抵消，扭转模态会消失）。再用频域分解（FDD）对互谱矩阵做奇异值分解，得到工作变形振型。</li>
+        <li><strong>定频激励</strong>（正弦驻留）：在已知频率上对每个点做最小二乘谐波拟合，直接得到振幅场和相位场，即该频率的工作变形振型（ODS）。</li>
+        <li><strong>与仿真或激光测振对比</strong>：用模态置信准则 MAC 衡量振型相似度。Beberniss 的 DIC 与激光测振结果 MAC 都接近 1；Liang 等用 DIC 测得的薄叶片前六阶振型与有限元的 MAC 都大于 0.88，差异主要来自薄叶片的残余应力和几何误差。</li>
+      </ul>
+      <div class="note"><span class="tag">什么时候用 DIC，什么时候用激光测振</span>激光测振仪的离面分辨率可达纳米甚至皮米，是模态测试的“金标准”，但只能逐点扫描。DIC 一次拍下全场，几秒钟的采集相当于激光测振仪几个小时的扫描，还能直接得到应变；代价是噪声底高得多、计算时间长（Reu, Rohe &amp; Jacobs 2017；Beberniss &amp; Ehrhardt 2017）。对轻质、低阻尼、容易受温度漂移影响的薄壁件，DIC 同时测全场反而更准。</div>
+    </section>
+
+    <!-- 14 -->
+    <section id="code">
+      <h2><span class="n">14</span>对应到本项目代码</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>原理</th><th>模块</th><th>说明</th></tr></thead>
+          <tbody>
+            <tr><td>相机模型、标定</td><td><code>calibration/</code></td><td>ChArUco 检测、单目与双目标定、残差报告</td></tr>
+            <tr><td>插值</td><td><code>dic/interp.py</code></td><td>三次和五次 B 样条，含边界安全带</td></tr>
+            <tr><td>形函数</td><td><code>dic/shape_functions.py</code></td><td>零、一、二阶，齐次矩阵组合</td></tr>
+            <tr><td>ZNSSD + IC-GN</td><td><code>dic/icgn.py</code>、<code>dic/backends/</code></td><td>NumPy 参考实现、Numba 和 CUDA 后端</td></tr>
+            <tr><td>初值与 RG-DIC</td><td><code>dic/init_guess.py</code>、<code>dic/rgdic.py</code></td><td>ZNCC 搜索、相位相关、可靠性引导传播</td></tr>
+            <tr><td>左右匹配</td><td><code>dic/stereo_match.py</code></td><td>SIFT 局部仿射种子 + RG-DIC，二阶</td></tr>
+            <tr><td>时序跟踪</td><td><code>dic/temporal.py</code></td><td>固定参考帧，失败点回退重试</td></tr>
+            <tr><td>三角化、局部坐标</td><td><code>recon/</code></td><td>重投影最小化、法向、刚体补偿</td></tr>
+            <tr><td>振动分析</td><td><code>vibration/</code></td><td>频谱、谐波拟合、ODS、FDD、FRF、MAC</td></tr>
+            <tr><td>合成验证</td><td><code>synth/</code></td><td>独立的散斑和双目渲染器，提供真值</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>如果想动手体会原理，最直接的是跑项目里的基准：<code>benchmarks.b01_subpixel_bias</code> 能看到插值偏差的周期曲线，<code>benchmarks.b04_stereo_s4</code> 能看到一阶和二阶左右匹配的差别、以及离面误差比面内大的现象。</p>
+    </section>
+
+    <!-- 15 -->
+    <section id="reading">
+      <h2><span class="n">15</span>推荐阅读</h2>
+      <p>按建议的阅读顺序排列。</p>
+      <ol class="refs">
+        <li>M. A. Sutton, J.-J. Orteu, H. W. Schreier. <em>Image Correlation for Shape, Motion and Deformation Measurements</em>. Springer, 2009.
+          <span class="why">领域教科书。相机模型、标定、立体 DIC、误差分析都有完整推导，附录 D 讲匹配算法。两篇参考文献都引用了它。</span></li>
+        <li>iDICs. <a href="https://www.idics.org/guide/DICGoodPracticesGuide_PrintVersion-V5h-181024.pdf" target="_blank" rel="noopener">A Good Practices Guide for Digital Image Correlation</a>（Jones &amp; Iadicola 编，2018；有中文译本，2025 年出了第二版）。
+          <span class="why">实操指南：散斑、立体夹角、景深、标定检查、参数选择。搭试验台前最值得读。</span></li>
+        <li>B. Pan, K. Qian, H. Xie, A. Asundi. Two-dimensional digital image correlation for in-plane displacement and strain measurement: a review. <em>Meas. Sci. Technol.</em> 20 (2009) 062001.
+          <span class="why">2D-DIC 的原理综述：相关准则、亚像素方法、误差。</span></li>
+        <li>B. Pan. <a href="https://doi.org/10.1088/1361-6501/aac55b" target="_blank" rel="noopener">Digital image correlation for surface deformation measurement: historical developments, recent advances and future goals</a>. <em>Meas. Sci. Technol.</em> 29 (2018) 082001.
+          <span class="why">较新的综述，包括 IC-GN、立体 DIC 和高速 DIC 的进展。</span></li>
+        <li>B. Pan, K. Li, W. Tong. Fast, robust and accurate digital image correlation calculation without redundant computations. <em>Exp. Mech.</em> 53 (2013) 1277–1289.
+          <span class="why">IC-GN 用于 DIC 的标准文献。</span></li>
+        <li>Y. Gao, T. Cheng, Y. Su, X. Xu, Y. Zhang, Q. Zhang. <a href="https://doi.org/10.1016/j.optlaseng.2014.05.013" target="_blank" rel="noopener">High-efficiency and high-accuracy digital image correlation for three-dimensional measurement</a>. <em>Opt. Lasers Eng.</em> 65 (2015) 73–80.
+          <span class="why">二阶形函数的 IC-GN，解释了为什么左右匹配需要二阶。</span></li>
+        <li>H. W. Schreier, J. R. Braasch, M. A. Sutton. Systematic errors in digital image correlation caused by intensity interpolation. <em>Opt. Eng.</em> 39 (2000) 2915–2921；H. W. Schreier, M. A. Sutton. Systematic errors in digital image correlation due to undermatched subset shape functions. <em>Exp. Mech.</em> 42 (2002) 303–310.
+          <span class="why">两类最重要的系统误差：插值偏差和形函数阶数不够。</span></li>
+        <li>Y. Q. Wang, M. A. Sutton, X. D. Ke 等. <a href="https://doi.org/10.1007/s11340-010-9449-9" target="_blank" rel="noopener">On error assessment in stereo-based deformation measurements</a>（Part I）；X. D. Ke, H. W. Schreier, M. A. Sutton 等. <a href="https://doi.org/10.1007/s11340-010-9450-3" target="_blank" rel="noopener">Part II: experimental validation</a>. <em>Exp. Mech.</em> 51 (2011) 405–441.
+          <span class="why">立体 DIC 的三维误差如何由图像匹配误差和几何参数决定。</span></li>
+        <li>T. J. Beberniss, D. A. Ehrhardt. High-speed 3D digital image correlation vibration measurement: recent advancements and noted limitations. <em>MSSP</em> 86 (2017) 35–48.（项目 <code>reference/</code> 目录）
+          <span class="why">高速 3D-DIC 测振的实践经验：与激光测振对比、噪声底、风扇和灯光伪峰、时间混叠。本讲解的振动部分多处引用它。</span></li>
+        <li>P. L. Reu, D. P. Rohe, L. D. Jacobs. <a href="https://doi.org/10.1016/j.ymssp.2016.02.006" target="_blank" rel="noopener">Comparison of DIC and LDV for practical vibration and modal measurements</a>. <em>MSSP</em> 86 (2017) 2–16.
+          <span class="why">同一块板同时用 DIC 和激光测振测量，客观比较两者的分辨率、成本和适用场景。</span></li>
+        <li>Z. Liang, Y. Zhang, L. Yue. Experimental investigation: vibration measurement of a rotating blade with digital image correlation and blade tip-timing. <em>Micromachines</em> 13 (2022) 2156.（项目 <code>reference/</code> 目录）
+          <span class="why">和本项目最接近的应用：高速双目 DIC 测薄叶片振型和应变，与有限元和叶尖定时对比。原理部分较简略。</span></li>
+        <li>Z. Zhang. A flexible new technique for camera calibration. <em>IEEE TPAMI</em> 22 (2000) 1330–1334.
+          <span class="why">平面标定法，你应该已经熟悉。</span></li>
+      </ol>
+    </section>
+
+    <footer>本讲解结合了项目 <code>reference/</code> 下的两篇文献、上面列出的经典文献，以及本项目合成基准（B01、B04）的实测数字。</footer>
+  </main>
+</div>
+
+<script>
+(function () {
+  var c = document.getElementById('speckle');
+  if (!c) return;
+  function draw() {
+    var dpr = Math.min(window.devicePixelRatio || 1, 2);
+    var w = c.clientWidth, h = c.clientHeight;
+    if (!w || !h) return;
+    c.width = Math.round(w * dpr); c.height = Math.round(h * dpr);
+    var ctx = c.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    var cs = getComputedStyle(document.documentElement);
+    var paper = cs.getPropertyValue('--paper').trim() || '#fff';
+    var ink = cs.getPropertyValue('--ink').trim() || '#000';
+    ctx.fillStyle = paper; ctx.fillRect(0, 0, w, h);
+    var seed = 7;
+    function rnd() { seed = (seed * 16807) % 2147483647; return (seed - 1) / 2147483646; }
+    var n = Math.round(w * h / 26);
+    ctx.fillStyle = ink;
+    for (var i = 0; i < n; i++) {
+      var x = rnd() * w, y = rnd() * h, r = 0.9 + rnd() * 1.6;
+      ctx.globalAlpha = 0.55 + rnd() * 0.45;
+      ctx.beginPath(); ctx.ellipse(x, y, r * (0.8 + rnd() * 0.4), r, rnd() * Math.PI, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+    var accent = cs.getPropertyValue('--accent').trim() || '#2f55b8';
+    ctx.strokeStyle = accent; ctx.lineWidth = 1.5;
+    var s = Math.min(54, h - 20), x0 = w * 0.62, y0 = (h - s) / 2;
+    ctx.strokeRect(x0, y0, s, s);
+    ctx.beginPath(); ctx.moveTo(x0 + s / 2 - 4, y0 + s / 2); ctx.lineTo(x0 + s / 2 + 4, y0 + s / 2);
+    ctx.moveTo(x0 + s / 2, y0 + s / 2 - 4); ctx.lineTo(x0 + s / 2, y0 + s / 2 + 4); ctx.stroke();
+  }
+  draw();
+  window.addEventListener('resize', draw);
+  if (window.matchMedia) {
+    var mq = window.matchMedia('(prefers-color-scheme: dark)');
+    if (mq.addEventListener) mq.addEventListener('change', draw);
+  }
+  new MutationObserver(draw).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+})();
+</script>
