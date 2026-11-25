@@ -68,3 +68,23 @@ export function robustRange(
   const b = v[Math.ceil(hi * (v.length - 1))]
   return a === b ? [a, a + 1e-9] : [a, b]
 }
+
+/** Diverging blue–white–red for signed values; t in [-1, 1]. */
+export function diverging(t: number): [number, number, number] {
+  if (!Number.isFinite(t)) return [110, 110, 110]
+  const x = Math.min(1, Math.max(-1, t))
+  const lo: [number, number, number] = [33, 102, 172]
+  const mid: [number, number, number] = [242, 242, 242]
+  const hi: [number, number, number] = [178, 24, 43]
+  const [a, b, f] = x < 0 ? [mid, lo, -x] : [mid, hi, x]
+  return [
+    a[0] + (b[0] - a[0]) * f,
+    a[1] + (b[1] - a[1]) * f,
+    a[2] + (b[2] - a[2]) * f,
+  ]
+}
+
+export function divergingCss(t: number): string {
+  const [r, g, b] = diverging(t)
+  return `rgb(${r | 0},${g | 0},${b | 0})`
+}

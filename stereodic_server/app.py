@@ -11,7 +11,7 @@ from fastapi.responses import FileResponse, JSONResponse
 
 from .jobs.manager import EventHub, JobManager
 from .jobs.store import JobStore
-from .routes import calibration, experiments, frames, jobs, reference, system
+from .routes import calibration, experiments, frames, jobs, reference, results, system
 from .settings import Settings
 from .workspace import Workspace, WorkspaceError
 
@@ -47,6 +47,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(frames.router)
     app.include_router(calibration.router)
     app.include_router(reference.router)
+    app.include_router(results.router)
 
     @app.get("/api/health")
     def health() -> dict[str, str]:

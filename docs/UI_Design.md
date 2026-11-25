@@ -658,6 +658,13 @@ ssh -N -L 8000:127.0.0.1:8000 <linux-host>
 - `webui`：参考帧页（Konva 绘制 ROI / 加入 / 扣除 / 刚体参考区，滚轮缩放与平移，子区与步长修改时测点网格实时更新，光标处显示子区范围；立体匹配结果按状态码 / ZNSSD / 重投影误差 / 深度着色的左右叠加图，悬停显示单点信息；三维形貌网格与 c、s、n 轴）。
 - 测试：`tests/unit/test_masks.py`、`tests/server/test_api.py::test_reference_endpoints`（保存的掩膜确实被立体匹配使用）。
 
+### 11.5 U4 完成情况（2026-11-25）
+
+- `stereodic`：时序阶段逐帧写 `quality/frame_summary`（左右有效比例、有效点 ZNSSD 中位数、平均迭代次数，B7），并随进度推送；旧结果没有该数据集时由服务端从状态码现算。
+- `stereodic_server`（`routes/results.py`，任务写文件时返回 409，读时序用 64 MB chunk cache）：`/dic/summary`、`/dic/status-map`（帧 × 测点降采样的有效比例与主要失效原因）、`/dic/point/{i}`（左右图像位移 u/v）、`/displacement/info`（各分量全帧抽样 99% 分位色标）、`/displacement/frame/{t}`、`/displacement/point/{i}`（min/max 抽稀保留峰值）、`/rbm`（平移、XYZ 转角、拟合残差）。
+- `webui`：uPlot 时间序列组件（主题配色、光标联动、标记线）；时序 DIC 页（设置摘要、运行/续算/强制重算、运行中实时有效比例与 ZNSSD 曲线、结果曲线、状态码时空图、单点图像轨迹）；重建页（全场位移网格按 c/s/n/模长着色、帧播放、位移放大叠加、点选测点看三分量时间历程与补偿前后对比、刚体运动曲线及未配置参考区的提示）。
+- 测试：`tests/server/test_api.py::test_results_endpoints`。
+
 ## 12. 风险与待确认事项
 
 | 事项 | 影响 | 对策 / 需要确认 |

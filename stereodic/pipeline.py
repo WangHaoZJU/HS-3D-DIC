@@ -404,6 +404,13 @@ def _ensure_temporal_datasets(
             ds_p.attrs["shape_order"] = shape_order
         elif reset and f"{prefix}params" in store.h5:
             del store.h5[f"{prefix}params"]
+    # per-frame summary (B7): valid ratio left/right, median ZNSSD of valid POIs, mean iterations
+    name = "quality/frame_summary"
+    if name in store.h5 and (reset or store.h5[name].shape != (n_frames, 4)):
+        del store.h5[name]
+    if name not in store.h5:
+        ds = store.h5.create_dataset(name, shape=(n_frames, 4), dtype=np.float32, fillvalue=np.nan)
+        ds.attrs["columns"] = "valid_left, valid_right, znssd_median, iterations_mean"
     done_name = "progress/dic_frames_done"
     if done_name in store.h5 and (reset or store.h5[done_name].shape != (n_frames, 2)):
         del store.h5[done_name]
@@ -415,6 +422,21 @@ def _ensure_temporal_datasets(
             chunks=(min(64, n_frames), 2),
             fillvalue=False,
         )
+
+
+def frame_summary(result_l, result_r) -> dict:
+    """Valid ratios, median ZNSSD and mean iterations of one frame (both cameras)."""
+    from .core.status import Status
+
+    good_l = result_l.status == Status.OK
+    good_r = result_r.status == Status.OK
+    it = np.concatenate([result_l.iterations[good_l], result_r.iterations[good_r]]).astype(np.float64)
+    return {
+        "valid_left": float(good_l.mean()) if good_l.size else 0.0,
+        "valid_right": float(good_r.mean()) if good_r.size else 0.0,
+        "znssd_median": _nanmedian_or_none(np.concatenate([result_l.znssd[good_l], result_r.znssd[good_r]])),
+        "iterations_mean": float(it.mean()) if it.size else None,
+    }
 
 
 def _nanmedian_or_none(values: np.ndarray) -> float | None:
@@ -609,18 +631,14 @@ def run_temporal(cfg: ExperimentConfig, force: bool = False, progress: ProgressR
             good_r = result_r.status == Status.OK
             if np.any(good_r):
                 previous_params_r[good_r] = result_r.params[good_r]
+            summary = frame_summary(result_l, result_r)
+            store.h5["quality/frame_summary"][row] = [
+                summary["valid_left"], summary["valid_right"],
+                np.nan if summary["znssd_median"] is None else summary["znssd_median"],
+                np.nan if summary["iterations_mean"] is None else summary["iterations_mean"],
+            ]
             progress.update(row + 1, n_rows, f"frame {frame_id}")
-            progress.summary(
-                {
-                    "row": row,
-                    "frame": int(frame_id),
-                    "valid_left": float(good_l.mean()) if n_points else 0.0,
-                    "valid_right": float(good_r.mean()) if n_points else 0.0,
-                    "znssd_median": _nanmedian_or_none(
-                        np.concatenate([result_l.znssd[good_l], result_r.znssd[good_r]])
-                    ),
-                }
-            )
+            progress.summary({"row": row, "frame": int(frame_id), **summary})
 
         _flush_pending()
         if bool(np.all(done[...])):

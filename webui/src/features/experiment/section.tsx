@@ -4,7 +4,9 @@ import { Planned } from '@/components/planned'
 import { CalibrationPage } from './calibration'
 import { ConfigEditor } from './config'
 import { ImportPage } from './import'
+import { ReconstructPage } from './reconstruct'
 import { ReferencePage } from './reference'
+import { TemporalPage } from './temporal'
 
 const PLANNED: Record<string, { items: string[]; note?: string }> = {
   import: {
@@ -77,6 +79,8 @@ export function ExperimentSection() {
   if (section === 'import') return <ImportPage name={name} />
   if (section === 'calibration') return <CalibrationPage name={name} />
   if (section === 'reference') return <ReferencePage name={name} />
+  if (section === 'temporal') return <TemporalPage name={name} />
+  if (section === 'reconstruct') return <ReconstructPage name={name} />
   const meta = SECTIONS.find((s) => s.key === section)
   const plan = PLANNED[section]
   if (!meta || !plan)

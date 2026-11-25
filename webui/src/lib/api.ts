@@ -381,6 +381,88 @@ export type ReferenceResult = {
   span_direction: number[]
 }
 
+export type DicSummary = {
+  n_frames: number
+  n_points: number
+  frames_done: number
+  frame_ids: [number, number][] | null
+  timestamps: (number | null)[]
+  valid_left: (number | null)[]
+  valid_right: (number | null)[]
+  znssd_median: (number | null)[]
+  iterations_mean: (number | null)[]
+  status_counts: Record<'left' | 'right', Record<string, number>>
+  reference_frame: number | null
+}
+
+export type StatusMap = {
+  valid: number[][]
+  worst: number[][]
+  t_edges: number[]
+  n_frames: number
+  n_points: number
+}
+
+export type DicPoint = {
+  i: number
+  timestamps: (number | null)[]
+  left: {
+    u: (number | null)[]
+    v: (number | null)[]
+    status: number[]
+    znssd: (number | null)[]
+  }
+  right: {
+    u: (number | null)[]
+    v: (number | null)[]
+    status: number[]
+    znssd: (number | null)[]
+  }
+}
+
+export type DisplacementInfo = {
+  n_frames: number
+  n_points: number
+  kinds: string[]
+  timestamps: (number | null)[]
+  ranges: Record<string, { abs: number[]; mag: number }>
+  valid_fraction: number | null
+  rbm: boolean
+}
+
+export type DisplacementFrame = {
+  t: number
+  kind: string
+  time: number
+  d: (number | null)[][]
+  status: number[]
+}
+
+export type PointSeries = {
+  t: (number | null)[]
+  c: (number | null)[]
+  s: (number | null)[]
+  n: (number | null)[]
+}
+export type DisplacementPoint = {
+  i: number
+  n_frames: number
+  local?: PointSeries
+  rbm_local?: PointSeries
+}
+
+export type RbmSeries = {
+  t: (number | null)[]
+  tx: (number | null)[]
+  ty: (number | null)[]
+  tz: (number | null)[]
+  rx: (number | null)[]
+  ry: (number | null)[]
+  rz: (number | null)[]
+  residual_rms: (number | null)[]
+  reference_points: number | null
+}
+
 // ------------------------------------------------------------------ calls
 const get = <T>(url: string, params?: object) =>
   http.get<T>(url, { params }).then((r) => r.data)
@@ -532,6 +614,36 @@ export const api = {
       .then((r) => r.data),
   reference: (name: string) =>
     get<ReferenceResult>(`/experiments/${encodeURIComponent(name)}/reference`),
+  dicSummary: (name: string) =>
+    get<DicSummary>(`/experiments/${encodeURIComponent(name)}/dic/summary`),
+  statusMap: (
+    name: string,
+    side: 'left' | 'right' | 'recon',
+    tBins = 240,
+    nBins = 200
+  ) =>
+    get<StatusMap>(`/experiments/${encodeURIComponent(name)}/dic/status-map`, {
+      side,
+      t_bins: tBins,
+      n_bins: nBins,
+    }),
+  dicPoint: (name: string, i: number) =>
+    get<DicPoint>(`/experiments/${encodeURIComponent(name)}/dic/point/${i}`),
+  displacementInfo: (name: string) =>
+    get<DisplacementInfo>(
+      `/experiments/${encodeURIComponent(name)}/displacement/info`
+    ),
+  displacementFrame: (name: string, t: number, kind: string) =>
+    get<DisplacementFrame>(
+      `/experiments/${encodeURIComponent(name)}/displacement/frame/${t}`,
+      { kind }
+    ),
+  displacementPoint: (name: string, i: number) =>
+    get<DisplacementPoint>(
+      `/experiments/${encodeURIComponent(name)}/displacement/point/${i}`
+    ),
+  rbm: (name: string) =>
+    get<RbmSeries>(`/experiments/${encodeURIComponent(name)}/rbm`),
   sharpness: (name: string, points = 120) =>
     get<Sharpness>(`/experiments/${encodeURIComponent(name)}/sharpness`, {
       points,
@@ -552,6 +664,7 @@ export const qk = {
   calibration: (name: string) => ['calibration', name] as const,
   masks: (name: string) => ['masks', name] as const,
   reference: (name: string) => ['reference', name] as const,
+  results: (name: string) => ['results', name] as const,
   frameReport: (name: string, cam: string, k: number) =>
     ['frame-report', name, cam, k] as const,
 }

@@ -230,3 +230,33 @@ def test_reference_endpoints(client: TestClient):
 
     cleared = client.put("/api/experiments/ref/masks", json={"roi": [10, 10, 300, 230], "poi": [], "rbm": []}).json()
     assert cleared["poi"]["path"] is None and cleared["rbm"]["path"] is None and cleared["roi"] == [10, 10, 300, 230]
+
+
+def test_results_endpoints(client: TestClient):
+    settings = client.app.state.settings
+    spec = DemoSpec(name="res", image_size=(320, 256), n_frames=6, n_calib_views=0, poi_step=24)
+    make_demo_dataset(settings.data_root, spec, workspace=settings.workspace / "res", workers=1, exact_calibration=True)
+    assert client.get("/api/experiments/res/dic/summary").status_code == 404
+    job = client.post("/api/experiments/res/jobs", json={"stage": "pipeline"}).json()
+    assert _wait(client, job["id"], timeout=300)["state"] == "succeeded"
+
+    s = client.get("/api/experiments/res/dic/summary").json()
+    assert s["n_frames"] == 6 and s["frames_done"] == 6 and len(s["valid_left"]) == 6
+    assert min(s["valid_left"]) > 0.9 and s["status_counts"]["left"]["OK"] > 0 and s["reference_frame"] == 0
+    assert s["znssd_median"][0] == 0.0 and s["znssd_median"][3] > 0
+
+    m = client.get("/api/experiments/res/dic/status-map", params={"t_bins": 3, "n_bins": 4}).json()
+    assert len(m["valid"]) == 3 and len(m["valid"][0]) == 4 and m["valid"][0][0] > 0.9
+    p = client.get("/api/experiments/res/dic/point/0").json()
+    assert p["left"]["u"][0] == 0.0 and len(p["right"]["v"]) == 6
+    assert client.get(f"/api/experiments/res/dic/point/{s['n_points']}").status_code == 404
+
+    info = client.get("/api/experiments/res/displacement/info").json()
+    assert {"local", "raw", "rbm_local"} <= set(info["kinds"]) and info["rbm"] and info["ranges"]["local"]["mag"] > 0
+    fr = client.get("/api/experiments/res/displacement/frame/3", params={"kind": "local"}).json()
+    assert len(fr["d"]) == s["n_points"] and len(fr["d"][0]) == 3
+    assert client.get("/api/experiments/res/displacement/frame/3", params={"kind": "bogus"}).status_code == 400
+    dp = client.get("/api/experiments/res/displacement/point/0", params={"max_samples": 4}).json()
+    assert len(dp["local"]["n"]) <= 6 and "rbm_local" in dp
+    r = client.get("/api/experiments/res/rbm").json()
+    assert len(r["tx"]) == 6 and r["residual_rms"][0] is not None

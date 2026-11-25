@@ -60,14 +60,12 @@ export const SECTIONS: {
     key: 'temporal',
     label: '时序 DIC',
     icon: Grid3x3,
-    milestone: 'U4',
     description: '固定参考时序追踪、实时有效率与状态码时空图',
   },
   {
     key: 'reconstruct',
     label: '重建',
     icon: Move3d,
-    milestone: 'U4',
     description: '三角化、刚体补偿与全场位移浏览',
   },
   {
