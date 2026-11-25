@@ -342,6 +342,45 @@ export type CalibrationPoses = {
   baseline_mm: number
 }
 
+export type MaskShape = { op: 'add' | 'subtract'; points: [number, number][] }
+
+export type MasksInfo = {
+  roi: [number, number, number, number] | null
+  image_shape: [number, number]
+  reference_frame: number
+  subset_size: number
+  step: number
+  poi: {
+    path: string | null
+    shapes: MaskShape[]
+    drawn: boolean
+    exists?: boolean
+  }
+  rbm: {
+    path: string | null
+    shapes: MaskShape[]
+    drawn: boolean
+    exists?: boolean
+  }
+}
+
+export type ReferenceResult = {
+  n: number
+  frame_index: number
+  input: Record<string, string>
+  points_left: (number | null)[]
+  points_right: (number | null)[]
+  status: number[]
+  status_counts: Record<string, number>
+  znssd: (number | null)[]
+  reprojection_error: (number | null)[]
+  points_3d: (number | null)[]
+  connectivity: number[]
+  mean_axes: Partial<Record<'c' | 's' | 'n', number[]>>
+  depth_range: [number, number] | null
+  span_direction: number[]
+}
+
 // ------------------------------------------------------------------ calls
 const get = <T>(url: string, params?: object) =>
   http.get<T>(url, { params }).then((r) => r.data)
@@ -461,6 +500,38 @@ export const api = {
     get<CalibrationPoses>(
       `/experiments/${encodeURIComponent(name)}/calibration/poses`
     ),
+  masks: (name: string) =>
+    get<MasksInfo>(`/experiments/${encodeURIComponent(name)}/masks`),
+  saveMasks: (
+    name: string,
+    body: {
+      roi: number[] | null
+      poi: MaskShape[]
+      rbm: MaskShape[]
+      subset_size: number
+      step: number
+    }
+  ) =>
+    http
+      .put<MasksInfo>(`/experiments/${encodeURIComponent(name)}/masks`, body)
+      .then((r) => r.data),
+  poiPreview: (
+    name: string,
+    body: {
+      roi: number[] | null
+      poi: MaskShape[] | null
+      subset_size: number
+      step: number
+    }
+  ) =>
+    http
+      .post<{ n: number; points: number[]; error?: string }>(
+        `/experiments/${encodeURIComponent(name)}/poi-preview`,
+        body
+      )
+      .then((r) => r.data),
+  reference: (name: string) =>
+    get<ReferenceResult>(`/experiments/${encodeURIComponent(name)}/reference`),
   sharpness: (name: string, points = 120) =>
     get<Sharpness>(`/experiments/${encodeURIComponent(name)}/sharpness`, {
       points,
@@ -479,6 +550,8 @@ export const qk = {
   sync: (name: string) => ['sync', name] as const,
   sharpness: (name: string) => ['sharpness', name] as const,
   calibration: (name: string) => ['calibration', name] as const,
+  masks: (name: string) => ['masks', name] as const,
+  reference: (name: string) => ['reference', name] as const,
   frameReport: (name: string, cam: string, k: number) =>
     ['frame-report', name, cam, k] as const,
 }

@@ -195,3 +195,38 @@ def test_calibration_endpoints(client: TestClient):
     poses = client.get("/api/experiments/cal/calibration/poses").json()
     assert len(poses["boards"]) == len(ov["pairs"]) and abs(poses["baseline_mm"] - ov["report"]["baseline_mm"]) < 1e-9
     assert poses["cameras"][1]["center"][0] > 50  # right camera sits at +x
+
+
+def test_reference_endpoints(client: TestClient):
+    settings = client.app.state.settings
+    spec = DemoSpec(name="ref", image_size=(320, 256), n_frames=2, n_calib_views=0, poi_step=24)
+    make_demo_dataset(settings.data_root, spec, workspace=settings.workspace / "ref", workers=1, exact_calibration=True)
+    m = client.get("/api/experiments/ref/masks").json()
+    assert m["image_shape"] == [256, 320] and m["poi"]["path"] is None and m["subset_size"] == 31
+
+    full = client.post("/api/experiments/ref/poi-preview", json={"roi": None, "poi": None, "subset_size": 31, "step": 12}).json()
+    region = [[60, 50], [260, 50], [260, 200], [60, 200]]
+    part = client.post("/api/experiments/ref/poi-preview",
+                       json={"roi": None, "poi": [{"op": "add", "points": region}], "subset_size": 31, "step": 12}).json()
+    assert 0 < part["n"] < full["n"] and len(part["points"]) == 2 * part["n"]
+    bad = client.post("/api/experiments/ref/poi-preview", json={"roi": None, "poi": None, "subset_size": 30, "step": 12})
+    assert bad.status_code == 422
+    assert client.get("/api/experiments/ref/reference").status_code == 404
+
+    saved = client.put("/api/experiments/ref/masks", json={
+        "roi": None, "poi": [{"op": "add", "points": region}],
+        "rbm": [{"op": "add", "points": [[40, 40], [90, 40], [90, 90], [40, 90]]}], "subset_size": 31, "step": 12,
+    }).json()
+    assert saved["poi"]["drawn"] and saved["poi"]["exists"] and saved["rbm"]["drawn"] and saved["step"] == 12
+    assert client.put("/api/experiments/ref/masks", json={"poi": [{"op": "add", "points": [[0, 0], [1, 0], [2, 0]]}]}).status_code == 422
+
+    job = client.post("/api/experiments/ref/jobs", json={"stage": "stereo"}).json()
+    assert _wait(client, job["id"], timeout=300)["state"] == "succeeded"
+    ref = client.get("/api/experiments/ref/reference").json()
+    assert ref["n"] == part["n"]  # the saved mask was used by the stereo stage
+    assert len(ref["points_3d"]) == 3 * ref["n"] and len(ref["connectivity"]) % 3 == 0
+    assert ref["status_counts"].get("OK", 0) >= ref["n"] - 2 and set(ref["mean_axes"]) == {"c", "s", "n"}
+    assert 200 < ref["depth_range"][0] < ref["depth_range"][1] < 320
+
+    cleared = client.put("/api/experiments/ref/masks", json={"roi": [10, 10, 300, 230], "poi": [], "rbm": []}).json()
+    assert cleared["poi"]["path"] is None and cleared["rbm"]["path"] is None and cleared["roi"] == [10, 10, 300, 230]

@@ -651,6 +651,13 @@ ssh -N -L 8000:127.0.0.1:8000 <linux-host>
 - `webui`：标定页（状态与操作、结果与内参、视图表勾选剔除并重新标定、逐视图角点与放大残差叠加、逐视图 RMS 柱状图、残差散点、相机与标定板三维位姿、标定板参数与实时渲染预览）。
 - 测试：`tests/integration/test_calibration_stage.py`、`tests/server/test_api.py::test_calibration_endpoints`。
 
+### 11.4 U3 完成情况（2026-11-25）
+
+- `stereodic/dic/masks.py`：多边形掩膜（加入 / 扣除，按顺序叠加；首个为扣除时从整幅图开始），栅格化为 8 位 PNG（`poi_mask` / `rbm_mask` 的格式），形状存在同名 JSON 中以便再次编辑；拒绝面积 < 1 px² 的退化多边形。
+- `stereodic_server`：`GET/PUT /experiments/{eid}/masks`（ROI、测量区域、刚体参考区、子区与步长一并保存，先校验后写文件）、`POST /poi-preview`（按未保存的形状实时生成测点网格）、`GET /reference`（参考帧测点、状态码、ZNSSD、重投影误差、三维点与三角网格、局部坐标系平均方向）；启用 gzip。
+- `webui`：参考帧页（Konva 绘制 ROI / 加入 / 扣除 / 刚体参考区，滚轮缩放与平移，子区与步长修改时测点网格实时更新，光标处显示子区范围；立体匹配结果按状态码 / ZNSSD / 重投影误差 / 深度着色的左右叠加图，悬停显示单点信息；三维形貌网格与 c、s、n 轴）。
+- 测试：`tests/unit/test_masks.py`、`tests/server/test_api.py::test_reference_endpoints`（保存的掩膜确实被立体匹配使用）。
+
 ## 12. 风险与待确认事项
 
 | 事项 | 影响 | 对策 / 需要确认 |

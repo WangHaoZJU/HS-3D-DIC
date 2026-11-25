@@ -6,11 +6,12 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 
 from .jobs.manager import EventHub, JobManager
 from .jobs.store import JobStore
-from .routes import calibration, experiments, frames, jobs, system
+from .routes import calibration, experiments, frames, jobs, reference, system
 from .settings import Settings
 from .workspace import Workspace, WorkspaceError
 
@@ -29,6 +30,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             app.state.store.close()
 
     app = FastAPI(title="StereoDIC", version="0.1", lifespan=lifespan)
+    app.add_middleware(GZipMiddleware, minimum_size=4096)
     app.state.settings = settings
     app.state.workspace = Workspace(settings)
     app.state.store = JobStore(settings.db_path)
@@ -44,6 +46,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(jobs.router)
     app.include_router(frames.router)
     app.include_router(calibration.router)
+    app.include_router(reference.router)
 
     @app.get("/api/health")
     def health() -> dict[str, str]:

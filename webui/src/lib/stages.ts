@@ -54,7 +54,6 @@ export const SECTIONS: {
     key: 'reference',
     label: '参考帧',
     icon: Crosshair,
-    milestone: 'U3',
     description: '选择参考帧、绘制 ROI 与掩膜、立体匹配与三维形貌',
   },
   {
