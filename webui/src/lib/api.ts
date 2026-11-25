@@ -377,6 +377,7 @@ export type ReferenceResult = {
   points_3d: (number | null)[]
   connectivity: number[]
   mean_axes: Partial<Record<'c' | 's' | 'n', number[]>>
+  local_frames: (number | null)[]
   depth_range: [number, number] | null
   span_direction: number[]
 }
@@ -461,6 +462,104 @@ export type RbmSeries = {
   rz: (number | null)[]
   residual_rms: (number | null)[]
   reference_points: number | null
+}
+
+export type AnalyzeOptions = {
+  direction: 0 | 1 | 2
+  use_rbm: boolean
+  min_frequency: number
+  max_frequency: number | null
+  max_peaks: number
+  nperseg: number | null
+  frequencies: number[]
+  fit_peaks: number
+  refine: boolean
+  n_harmonics: number
+  fdd: boolean
+  n_modes: number
+  force_file: string | null
+}
+
+export type Vibration = {
+  options: Partial<AnalyzeOptions>
+  sample_rate_hz: number
+  n_frames: number
+  duration_s: number
+  spectrum: { frequencies: (number | null)[]; amplitude: (number | null)[][] }
+  peaks: {
+    frequency_hz: number
+    amplitude_mm: number
+    damping: number | null
+    damping_limited: boolean
+    left_hz: number
+    right_hz: number
+  }[]
+  damping_resolution_hz: number | null
+  harmonic: {
+    key: string
+    frequency_hz: number
+    requested_hz: number | null
+    direction: number
+    use_rbm: boolean
+    max_amplitude_mm: (number | null)[]
+  }[]
+  fdd: {
+    frequencies: (number | null)[]
+    singular_values: (number | null)[][]
+    peak_frequencies: (number | null)[]
+  } | null
+  frf: {
+    frequencies: (number | null)[]
+    H1_mean_abs: (number | null)[]
+    coherence_mean: (number | null)[]
+  } | null
+  noise?: {
+    experiment: string
+    frequencies: (number | null)[]
+    amplitude: (number | null)[][]
+  }
+}
+
+export type Harmonic = {
+  key: string
+  frequency_hz: number
+  amplitude: (number | null)[][]
+  phase: (number | null)[][]
+  re: (number | null)[][]
+  im: (number | null)[][]
+  residual_rms: (number | null)[][]
+  significant: number[][] | null
+  noise_from?: string
+}
+
+export type FddMode = {
+  p: number
+  frequency_hz: number
+  direction: number
+  re: (number | null)[]
+  im: (number | null)[]
+}
+export type MacResult = { labels: string[]; mac: (number | null)[][] }
+
+export type Quality = {
+  n_frames: number | null
+  valid_fraction?: number
+  noise_floor: {
+    std: (number | null)[][]
+    median_std_mm: number[]
+    p95_std_mm: number[]
+    n_frames: number
+    use_rbm: boolean
+    spectrum: { frequencies: (number | null)[]; amplitude: (number | null)[][] }
+  } | null
+  uncertainty: {
+    key: string
+    pixel_sigma: number
+    std: (number | null)[][]
+    median_std_mm: number[]
+    monte_carlo_median_std_mm?: number[]
+    monte_carlo?: number
+  }[]
 }
 
 // ------------------------------------------------------------------ calls
@@ -644,6 +743,34 @@ export const api = {
     ),
   rbm: (name: string) =>
     get<RbmSeries>(`/experiments/${encodeURIComponent(name)}/rbm`),
+  vibration: (name: string, noiseFrom?: string | null) =>
+    get<Vibration>(
+      `/experiments/${encodeURIComponent(name)}/vibration`,
+      noiseFrom ? { noise_from: noiseFrom } : undefined
+    ),
+  harmonic: (
+    name: string,
+    key: string,
+    noiseFrom?: string | null,
+    kSigma = 5
+  ) =>
+    get<Harmonic>(
+      `/experiments/${encodeURIComponent(name)}/vibration/harmonic/${key}`,
+      {
+        ...(noiseFrom ? { noise_from: noiseFrom } : {}),
+        k_sigma: kSigma,
+      }
+    ),
+  fddMode: (name: string, p: number) =>
+    get<FddMode>(`/experiments/${encodeURIComponent(name)}/vibration/fdd/${p}`),
+  mac: (name: string) =>
+    get<MacResult>(`/experiments/${encodeURIComponent(name)}/vibration/mac`),
+  quality: (name: string) =>
+    get<Quality>(`/experiments/${encodeURIComponent(name)}/quality`),
+  reportUrl: (name: string) =>
+    `/api/experiments/${encodeURIComponent(name)}/report.html`,
+  exportUrl2: (name: string, path: string) =>
+    `/api/experiments/${encodeURIComponent(name)}/export/${path}`,
   sharpness: (name: string, points = 120) =>
     get<Sharpness>(`/experiments/${encodeURIComponent(name)}/sharpness`, {
       points,

@@ -165,3 +165,67 @@ def fit_harmonic(
         valid=valid.reshape(field_shape),
         n_samples=n_used.reshape(field_shape),
     )
+
+
+def _harmonic_energy(flat: np.ndarray, t0: np.ndarray, frequency_hz: float) -> float:
+    """Total fitted energy sum_j (a_j^2 + b_j^2) at one frequency (offset included in the model)."""
+    w = 2.0 * np.pi * frequency_hz * t0
+    design = np.column_stack([np.cos(w), np.sin(w), np.ones_like(t0)])
+    sol, *_ = np.linalg.lstsq(design, flat, rcond=None)
+    return float(np.sum(sol[0] ** 2 + sol[1] ** 2))
+
+
+def refine_frequency(
+    values: np.ndarray,
+    timestamps: np.ndarray,
+    frequency_hz: float,
+    *,
+    halfwidth_hz: float | None = None,
+    max_channels: int = 4000,
+    tolerance_hz: float | None = None,
+) -> float:
+    """Frequency that maximizes the fitted harmonic energy summed over the whole field.
+
+    A frequency error df accumulates 2*pi*df*T of phase over the record and biases the
+    fitted amplitude (review: 3 % at 1 s, 21 % at 10 s with a Welch-peak frequency). The
+    energy is a smooth peak of width ~1/T around the true frequency; it is searched on a
+    grid over +-halfwidth (default 1.5/T) and refined by golden-section search. Works for
+    undersampled data too, provided the aliased frequency is away from 0 and fs/2.
+    """
+    y = np.asarray(values, dtype=np.float64)
+    t = np.asarray(timestamps, dtype=np.float64).reshape(-1)
+    if y.shape[0] != t.size:
+        raise ValueError("values and timestamps must have the same time length")
+    flat = y.reshape(t.size, -1)
+    flat = flat[:, np.all(np.isfinite(flat), axis=0)]
+    if flat.shape[1] == 0:
+        raise ValueError("no channel without missing samples")
+    if flat.shape[1] > max_channels:
+        flat = flat[:, np.linspace(0, flat.shape[1] - 1, max_channels).astype(int)]
+    t0 = t - t.mean()
+    duration = float(t[-1] - t[0])
+    if halfwidth_hz is None:
+        halfwidth_hz = 1.5 / duration
+    if tolerance_hz is None:
+        tolerance_hz = 1e-5 / duration
+    grid = np.linspace(frequency_hz - halfwidth_hz, frequency_hz + halfwidth_hz, 61)
+    grid = grid[grid > 0]
+    e = np.array([_harmonic_energy(flat, t0, f) for f in grid])
+    k = int(np.argmax(e))
+    a = grid[max(k - 1, 0)]
+    b = grid[min(k + 1, grid.size - 1)]
+    g = (np.sqrt(5.0) - 1.0) / 2.0
+    c, d = b - g * (b - a), a + g * (b - a)
+    ec, ed = _harmonic_energy(flat, t0, c), _harmonic_energy(flat, t0, d)
+    for _ in range(80):
+        if b - a < tolerance_hz:
+            break
+        if ec > ed:
+            b, d, ed = d, c, ec
+            c = b - g * (b - a)
+            ec = _harmonic_energy(flat, t0, c)
+        else:
+            a, c, ec = c, d, ed
+            d = a + g * (b - a)
+            ed = _harmonic_energy(flat, t0, d)
+    return float(0.5 * (a + b))

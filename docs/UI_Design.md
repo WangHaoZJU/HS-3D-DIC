@@ -616,7 +616,7 @@ ssh -N -L 8000:127.0.0.1:8000 <linux-host>
 | **U2 标定** | 检测 → 视图列表 → 标定 → 结果（RMS、残差、三维位姿）→ 剔除视图重标 | B5 | 合成 ChArUco 数据的标定结果与命令行一致 |
 | **U3 参考帧与立体** | 掩膜绘制、POI 预览、立体任务、POI 叠加、三维形貌 | — | 演示数据的形貌误差与 B04 量级一致 |
 | **U4 时序、重建、补偿** | 运行/续算/取消、实时摘要、状态码时空图、位移场浏览、点时间序列 | B7 | 中途取消后可以续算，结果与不中断时一致 |
-| **U5 分析与质量** | 谱与峰值、谐波拟合、ODS 动画、FDD、FRF、MAC、噪声底、不确定度、报告导出 | B2、B3 + 分析层修复 | 演示数据（S6）的频率、振幅、相位与真值吻合；报告可以打印 |
+| **U5 分析与质量** ✅ | 谱与峰值、谐波拟合、ODS 动画、FDD、FRF、MAC、噪声底、不确定度、报告导出 | B2、B3 + 分析层修复 | 演示数据（S6）的频率、振幅、相位与真值吻合；报告可以打印 |
 | **U6 Linux 部署** | 在 A6000 上部署，用 CUDA 后端跑完整数据集 | — | 2 万 POI × 数千帧的实验能完整跑通，浏览器端交互流畅 |
 
 **演示数据**：`scripts/make_demo_dataset.py` 调用现有的 `synth/`（ChArUco 标定图 + S6 曲面简谐振动），生成一套与真实目录结构相同的数据，包括 TIFF 序列、时间戳、标定图像和真值文件。在 Mac 上开发 UI 时不依赖相机和 GPU，同时也作为端到端回归测试数据。
@@ -664,6 +664,19 @@ ssh -N -L 8000:127.0.0.1:8000 <linux-host>
 - `stereodic_server`（`routes/results.py`，任务写文件时返回 409，读时序用 64 MB chunk cache）：`/dic/summary`、`/dic/status-map`（帧 × 测点降采样的有效比例与主要失效原因）、`/dic/point/{i}`（左右图像位移 u/v）、`/displacement/info`（各分量全帧抽样 99% 分位色标）、`/displacement/frame/{t}`、`/displacement/point/{i}`（min/max 抽稀保留峰值）、`/rbm`（平移、XYZ 转角、拟合残差）。
 - `webui`：uPlot 时间序列组件（主题配色、光标联动、标记线）；时序 DIC 页（设置摘要、运行/续算/强制重算、运行中实时有效比例与 ZNSSD 曲线、结果曲线、状态码时空图、单点图像轨迹）；重建页（全场位移网格按 c/s/n/模长着色、帧播放、位移放大叠加、点选测点看三分量时间历程与补偿前后对比、刚体运动曲线及未配置参考区的提示）。
 - 测试：`tests/server/test_api.py::test_results_endpoints`。
+
+### 11.6 U5 完成情况（2026-11-25）
+
+- 分析层修复（代码评审遗留）：
+  - 时间轴：用最小二乘直线判定等间隔，µs 量化时间戳（7000 fps）可用；丢帧给出明确提示（FFT/Welch 需要连续数据，谐波拟合不需要）。
+  - 拟合频率精化：`vibration.harmonic.refine_frequency` 在 ±1.5/T 内按全场谐波能量最大化搜索（网格 + 黄金分割），消除频率误差带来的振幅偏小（合成测试：1 s / 10 s 记录偏差都 < 1%，原来 >10%）。
+  - 阻尼：用全长单段谱估计；半功率带宽不足 4 个频率分辨单元时标记 `resolution_limited`（只能作为上限）。
+  - 力信号：两列（时间、力）时按相机时间戳线性重采样。
+- `stereodic/analysis.py`（B2/B3）：`run_analyze(cfg, AnalyzeOptions)`（三分量全场平均谱、峰值、逐峰阻尼、多个频率的谐波拟合 / ODS 保留在 `vibration/harmonic/<key>`、FDD 只保存各峰处的奇异向量、FRF）、`run_noise_floor`、`run_uncertainty`；`scripts/analyze.py`、`report_uncertainty.py`、新的 `noise_floor.py` 只解析参数。阶段状态新增 `noise_floor`。
+- `stereodic_server`：任务 `analyze` / `noise_floor` / `uncertainty`；`/vibration`（可叠加其他实验的噪声谱）、`/vibration/harmonic/{key}`（三分量振幅、相位、复数响应，可按静态噪声底 5σ·√(2/N) 给出显著性）、`/vibration/fdd/{p}`、`/vibration/mac`、`/quality`、`/report.html`（自包含，可打印为 PDF）、`/export/peaks.csv`、`/export/harmonic/{key}.csv`、`/export/shape.ply`、`/export/point/{i}.csv`。
+- `webui`：振动分析页（参数、对数谱与峰值表、一键谐波拟合、振幅 / 相位（循环色）/ ODS 动画（按局部坐标系把三分量响应变形到形貌上）、FDD 奇异值谱与振型、MAC 矩阵、FRF 与相干）；质量页（静态噪声底逐点 σ 与噪声谱、三角化不确定度与蒙特卡洛）；报告页（打开报告、导出文件）。
+- 演示数据验证：峰值 136.96 / 411.96 Hz（真值 137 / 412），412 Hz 平动振幅 19.8 µm（真值 20 µm）；ODS 与 FDD 振型 MAC = 1.00，两阶之间 ≈ 0。
+- 测试：`tests/unit/test_analysis_fixes.py`、`tests/integration/test_analysis_stage.py`、`tests/server/test_api.py::test_analysis_endpoints`。
 
 ## 12. 风险与待确认事项
 

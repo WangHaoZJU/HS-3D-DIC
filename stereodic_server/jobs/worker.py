@@ -20,7 +20,7 @@ from typing import Any
 from stereodic.core.progress import JobCancelled
 
 # Stages the worker can run. analyze / uncertainty / noise_floor follow in U5 (docs §9 B2/B3).
-RUNNABLE = ("calibrate_detect", "calibrate", "stereo", "temporal", "reconstruct", "rbm", "pipeline", "noop")
+RUNNABLE = ("calibrate_detect", "calibrate", "stereo", "temporal", "reconstruct", "rbm", "analyze", "noise_floor", "uncertainty", "pipeline", "noop")
 PIPELINE_DEFAULT = ("stereo", "temporal", "reconstruct", "rbm")
 
 
@@ -135,6 +135,25 @@ def run_stage(stage: str, cfg, force: bool, params: dict[str, Any], progress: Qu
         pipeline.run_reconstruct(cfg, force=force, progress=progress)
     elif stage == "rbm":
         pipeline.run_rbm(cfg, force=force, progress=progress)
+    elif stage == "analyze":
+        from stereodic.analysis import AnalyzeOptions, run_analyze
+
+        run_analyze(cfg, AnalyzeOptions(**(params.get("options") or {})), progress=progress)
+    elif stage == "noise_floor":
+        from stereodic.analysis import run_noise_floor
+
+        run_noise_floor(cfg, use_rbm=bool(params.get("use_rbm", False)), progress=progress)
+    elif stage == "uncertainty":
+        from stereodic.analysis import run_uncertainty
+
+        run_uncertainty(
+            cfg,
+            pixel_sigma=float(params.get("pixel_sigma", 0.01)),
+            monte_carlo=int(params.get("monte_carlo", 0)),
+            seed=int(params.get("seed", 0)),
+            frame_index=params.get("frame_index"),
+            progress=progress,
+        )
     elif stage == "noop":
         _noop(params, progress)
     else:

@@ -32,6 +32,7 @@ export function TimeChart({
   yLabel,
   y2Label,
   yRange,
+  logY = false,
   markers = [],
   syncKey,
   onPick,
@@ -44,6 +45,7 @@ export function TimeChart({
   yLabel?: string
   y2Label?: string
   yRange?: [number, number]
+  logY?: boolean
   markers?: ChartMarker[]
   syncKey?: string
   onPick?: (x: number) => void
@@ -70,11 +72,12 @@ export function TimeChart({
         ])
       ) +
       (yRange ?? '') +
+      String(logY) +
       height +
       xLabel +
       yLabel +
       y2Label,
-    [series, yRange, height, xLabel, yLabel, y2Label]
+    [series, yRange, logY, height, xLabel, yLabel, y2Label]
   )
 
   useEffect(() => {
@@ -93,7 +96,7 @@ export function TimeChart({
       },
       scales: {
         x: { time: false },
-        y: yRange ? { range: yRange } : {},
+        y: logY ? { distr: 3 } : yRange ? { range: yRange } : {},
         ...(hasY2 ? { y2: {} } : {}),
       },
       axes: [

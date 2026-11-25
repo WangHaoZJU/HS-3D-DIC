@@ -260,3 +260,38 @@ def test_results_endpoints(client: TestClient):
     assert len(dp["local"]["n"]) <= 6 and "rbm_local" in dp
     r = client.get("/api/experiments/res/rbm").json()
     assert len(r["tx"]) == 6 and r["residual_rms"][0] is not None
+
+
+def test_analysis_endpoints(client: TestClient):
+    settings = client.app.state.settings
+    spec = DemoSpec(name="vib", image_size=(320, 256), n_frames=40, n_calib_views=0, poi_step=32)
+    make_demo_dataset(settings.data_root, spec, workspace=settings.workspace / "vib", workers=4, exact_calibration=True)
+    assert _wait(client, client.post("/api/experiments/vib/jobs", json={"stage": "pipeline"}).json()["id"], 300)["state"] == "succeeded"
+    assert client.get("/api/experiments/vib/vibration").status_code == 404
+    job = client.post("/api/experiments/vib/jobs", json={"stage": "analyze", "params": {"options": {"fit_peaks": 2, "fdd": True}}}).json()
+    done = _wait(client, job["id"], 300)
+    assert done["state"] == "succeeded", client.get(f"/api/jobs/{job['id']}/log").json()["text"][-1500:]
+    nf = client.post("/api/experiments/vib/jobs", json={"stage": "noise_floor"}).json()
+    assert _wait(client, nf["id"], 120)["state"] == "succeeded"
+    un = client.post("/api/experiments/vib/jobs", json={"stage": "uncertainty", "params": {"pixel_sigma": 0.02}}).json()
+    assert _wait(client, un["id"], 120)["state"] == "succeeded"
+
+    v = client.get("/api/experiments/vib/vibration", params={"noise_from": "vib"}).json()
+    assert len(v["spectrum"]["amplitude"]) == 3 and v["peaks"] and len(v["harmonic"]) == 2 and v["fdd"] and v["noise"]
+    key = v["harmonic"][0]["key"]
+    h = client.get(f"/api/experiments/vib/vibration/harmonic/{key}", params={"noise_from": "vib"}).json()
+    n = len(h["amplitude"])
+    assert len(h["amplitude"][0]) == 3 and len(h["re"]) == n and h["significant"] is not None
+    assert client.get("/api/experiments/vib/vibration/fdd/0").json()["re"]
+    m = client.get("/api/experiments/vib/vibration/mac").json()
+    assert len(m["labels"]) == len(m["mac"]) >= 3 and abs(m["mac"][0][0] - 1) < 1e-6
+    q = client.get("/api/experiments/vib/quality").json()
+    assert q["noise_floor"]["n_frames"] == 40 and q["uncertainty"][0]["pixel_sigma"] == 0.02
+
+    assert client.get("/api/experiments/vib/export/peaks.csv").text.startswith("frequency_hz")
+    assert client.get(f"/api/experiments/vib/export/harmonic/{key}.csv").text.count("\n") == n + 1
+    ply = client.get("/api/experiments/vib/export/shape.ply").text
+    assert ply.startswith("ply") and "element face" in ply
+    assert client.get("/api/experiments/vib/export/point/0.csv").text.count("\n") == 41
+    rep = client.get("/api/experiments/vib/report.html")
+    assert rep.status_code == 200 and "振动分析" in rep.text and "data:image/png;base64" in rep.text

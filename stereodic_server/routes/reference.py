@@ -176,6 +176,7 @@ def reference_result(request: Request, name: str) -> dict[str, Any]:
             "reprojection_error": _round(g["reprojection_error"][()], 4),
             "points_3d": _round(X, 4),
             "connectivity": g["connectivity"][()].astype(np.int64).ravel().tolist(),
+            "local_frames": _round(frames, 5),
             "mean_axes": axes,
             "depth_range": [float(depth.min()), float(depth.max())] if depth.size else None,
             "span_direction": cfg.recon.span_direction,

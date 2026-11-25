@@ -17,7 +17,15 @@ class Spectrum:
     n_samples: int
 
 
-def _uniform_sample_rate(timestamps: np.ndarray, tolerance: float = 1e-3) -> float:
+def _uniform_sample_rate(timestamps: np.ndarray, tolerance: float = 0.25) -> float:
+    """Sample rate of a uniformly sampled time axis.
+
+    The rate comes from a least-squares line through the timestamps, so timestamp
+    quantization (e.g. 1 µs resolution at 7000 fps, ~0.7 % of the interval) does not
+    matter. The axis is rejected only if a sample deviates from the line by more than
+    `tolerance` intervals, or an interval is > 1.5x the median (dropped frames): FFT and
+    Welch need contiguous data (docs §11.1), harmonic fitting does not.
+    """
     t = np.asarray(timestamps, dtype=np.float64).reshape(-1)
     if t.size < 2:
         raise ValueError("at least two timestamps are required")
@@ -25,9 +33,18 @@ def _uniform_sample_rate(timestamps: np.ndarray, tolerance: float = 1e-3) -> flo
     if np.any(~np.isfinite(dt)) or np.any(dt <= 0):
         raise ValueError("timestamps must be finite and strictly increasing")
     median = float(np.median(dt))
-    if np.max(np.abs(dt - median)) > tolerance * median:
-        raise ValueError("FFT/Welch requires nearly uniform timestamps")
-    return 1.0 / median
+    gaps = np.nonzero(dt > 1.5 * median)[0]
+    if gaps.size:
+        raise ValueError(
+            f"{gaps.size} gap(s) in the time axis (first after sample {int(gaps[0])}): dropped frames; "
+            "FFT/Welch need contiguous samples, use a contiguous segment or the harmonic fit"
+        )
+    k = np.arange(t.size, dtype=np.float64)
+    slope, intercept = np.polyfit(k, t, 1)
+    resid = t - (intercept + slope * k)
+    if np.max(np.abs(resid)) > tolerance * slope:
+        raise ValueError("FFT/Welch requires nearly uniform timestamps (jitter above a quarter interval)")
+    return 1.0 / float(slope)
 
 
 def _prepare_signal(values: np.ndarray, timestamps: np.ndarray) -> tuple[np.ndarray, float]:

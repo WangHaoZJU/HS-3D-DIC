@@ -15,7 +15,7 @@ Python package: `stereodic`. Technical design: [docs/StereoDIC_Technical_Design.
 | M2 | Calibration (ChArUco), 2nd-order IC-GN, stereo matching (SIFT + RG-DIC), triangulation, reference shape, B04 | done (real-data E1/E2 pending) |
 | M3 | Fixed-reference temporal DIC, reconstruction, sync, spectra, CUDA path | done (CUDA validated on A6000; E3 pending) |
 | M4 | Harmonic fit, ODS, FDD, FRF, damping, MAC, rigid-body compensation | done (LDV/FEM validation pending) |
-| M5 | Uncertainty propagation, Monte Carlo checks, and noise-floor statistics | in progress (hardware covariance pending) |
+| M5 | Uncertainty propagation, Monte Carlo checks, and noise-floor statistics | done in software (calibration covariance and E1/E2 calibration pending) |
 
 ## Machines and workflow
 
@@ -95,7 +95,10 @@ uv run python scripts/run_dic.py --config configs/experiments/<name>.yaml --stag
 uv run python scripts/analyze.py --config configs/experiments/<name>.yaml --direction 2
 # optional harmonic fit, FDD, and FRF
 uv run python scripts/analyze.py --config configs/experiments/<name>.yaml --direction 2 \
-  --frequency 1000 --fdd --force-file force.csv
+  --frequency 1000 --fdd --force-file force.csv   # fit frequencies are refined unless --no-refine
+
+# static noise floor (E1) of an acquisition of the blade at rest
+uv run python scripts/noise_floor.py --config configs/experiments/<static>.yaml
 
 # first-order stereo uncertainty and optional Monte Carlo check
 uv run python scripts/report_uncertainty.py \
@@ -163,7 +166,8 @@ stereodic/
   dic/         B-spline interpolation, shape functions (0/1/2), IC-GN, SIFT/RG-DIC stereo matching, backends
   recon/       triangulation, normals and local frames, reference shape
   pipeline.py  stage orchestration (calibrate, stereo, temporal, reconstruct, rbm), stage status
-  vibration/   spectra, harmonic fit, ODS, FDD, FRF, damping, and MAC
+  vibration/   spectra, harmonic fit (with frequency refinement), ODS, FDD, FRF, damping, and MAC
+  analysis.py  analysis stages: vibration, static noise floor, triangulation uncertainty
 stereodic_server/  web UI backend (FastAPI, job queue, workspace)
 webui/         web UI frontend (React, shadcn/ui)
 benchmarks/    synthetic accuracy and throughput benchmarks

@@ -3,7 +3,7 @@ import { useMemo } from 'react'
 import { OrbitControls } from '@react-three/drei'
 import { Canvas, type ThreeEvent } from '@react-three/fiber'
 import * as THREE from 'three'
-import { diverging, viridis } from '@/lib/colormap'
+import { cyclic, diverging, viridis } from '@/lib/colormap'
 
 export type FieldMeshProps = {
   points3d: (number | null)[] // (N*3) reference positions, left-camera frame (mm)
@@ -11,6 +11,7 @@ export type FieldMeshProps = {
   values: (number | null)[] | null // per vertex
   range: number // colour scale: [-range, range] (signed) or [0, range]
   signed: boolean
+  cyclicColors?: boolean // values are phases (rad)
   warp?: (number | null)[][] | null // (N, 3) camera-frame displacement (mm) to add, times gain
   gain?: number
   selected?: number | null
@@ -87,9 +88,11 @@ export default function FieldMesh(props: FieldMeshProps) {
       const [r, gg, b] =
         v == null
           ? [90, 90, 90]
-          : props.signed
-            ? diverging(v / (props.range || 1))
-            : viridis(Math.abs(v) / (props.range || 1))
+          : props.cyclicColors
+            ? cyclic(v)
+            : props.signed
+              ? diverging(v / (props.range || 1))
+              : viridis(Math.abs(v) / (props.range || 1))
       c.setRGB(r / 255, gg / 255, b / 255, THREE.SRGBColorSpace)
       col.set([c.r, c.g, c.b], 3 * i)
     }

@@ -88,3 +88,16 @@ export function divergingCss(t: number): string {
   const [r, g, b] = diverging(t)
   return `rgb(${r | 0},${g | 0},${b | 0})`
 }
+
+/** Cyclic colour map for phase (rad), hue wheel. */
+export function cyclic(phase: number): [number, number, number] {
+  if (!Number.isFinite(phase)) return [110, 110, 110]
+  const h = (((phase / (2 * Math.PI)) % 1) + 1) % 1
+  const s = 0.65
+  const l = 0.55
+  const k = (n: number) => (n + h * 12) % 12
+  const a = s * Math.min(l, 1 - l)
+  const f = (n: number) =>
+    l - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1)))
+  return [f(0) * 255, f(8) * 255, f(4) * 255]
+}

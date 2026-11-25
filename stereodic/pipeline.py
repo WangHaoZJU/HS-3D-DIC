@@ -17,7 +17,7 @@ from .dic import shape_functions as sf
 
 log = logging.getLogger(__name__)
 
-STAGES = ("calibrate", "stereo", "temporal", "reconstruct", "rbm", "analyze", "uncertainty")
+STAGES = ("calibrate", "stereo", "temporal", "reconstruct", "rbm", "analyze", "uncertainty", "noise_floor")
 
 
 # ------------------------------------------------------------------- calibration
@@ -972,7 +972,7 @@ def stage_status(cfg: ExperimentConfig) -> dict[str, dict]:
             if "reconstruction/xyz" in h5:
                 out["rbm"] = done_record(attrs, "rbm", _rbm_stage_hash(cfg, attrs, h5["reconstruction/xyz"].shape))
 
-            for stage in ("analyze", "uncertainty"):
+            for stage in ("analyze", "uncertainty", "noise_floor"):
                 out[stage] = done_record(attrs, stage, None)
     except Exception as exc:  # noqa: BLE001
         for s in STAGES[1:]:
@@ -987,6 +987,7 @@ def stage_status(cfg: ExperimentConfig) -> dict[str, dict]:
         ("temporal", "reconstruct"),
         ("reconstruct", "rbm"),
         ("reconstruct", "analyze"),
+        ("reconstruct", "noise_floor"),
         ("stereo", "uncertainty"),
     )
     for up, down in edges:

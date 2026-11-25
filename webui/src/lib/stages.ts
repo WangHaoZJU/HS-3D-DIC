@@ -72,21 +72,18 @@ export const SECTIONS: {
     key: 'vibration',
     label: '振动分析',
     icon: Waves,
-    milestone: 'U5',
     description: '全场平均谱、谐波拟合、ODS 动画、FDD、FRF 与 MAC',
   },
   {
     key: 'quality',
     label: '质量',
     icon: ClipboardCheck,
-    milestone: 'U5',
     description: '静态噪声底、不确定度传播与质量汇总',
   },
   {
     key: 'report',
     label: '报告',
     icon: FileText,
-    milestone: 'U5',
     description: '生成 HTML 报告与导出 CSV / NPZ / PLY',
   },
 ]
@@ -111,6 +108,11 @@ export const RUNNABLE: { key: string; label: string; hint: string }[] = [
   { key: 'temporal', label: '时序 DIC', hint: '帧级断点续算' },
   { key: 'reconstruct', label: '三维重建', hint: '帧级断点续算' },
   { key: 'rbm', label: '刚体补偿', hint: '' },
+  {
+    key: 'analyze',
+    label: '振动分析（默认参数）',
+    hint: '谱、峰值、阻尼、前 3 个峰的谐波拟合、FDD；参数在振动分析页设置',
+  },
   {
     key: 'pipeline',
     label: '立体 → 时序 → 重建 → 补偿',
@@ -168,6 +170,7 @@ export const STAGE_LABEL: Record<string, string> = {
   reconstruct: '重建',
   rbm: '刚体补偿',
   analyze: '振动分析',
+  noise_floor: '噪声底',
   uncertainty: '不确定度',
   pipeline: '流水线',
   noop: '测试任务',
