@@ -1,6 +1,7 @@
 import { useParams } from '@tanstack/react-router'
 import { SECTIONS } from '@/lib/stages'
 import { Planned } from '@/components/planned'
+import { CalibrationPage } from './calibration'
 import { ConfigEditor } from './config'
 import { ImportPage } from './import'
 
@@ -73,6 +74,7 @@ export function ExperimentSection() {
   })
   if (section === 'config') return <ConfigEditor name={name} />
   if (section === 'import') return <ImportPage name={name} />
+  if (section === 'calibration') return <CalibrationPage name={name} />
   const meta = SECTIONS.find((s) => s.key === section)
   const plan = PLANNED[section]
   if (!meta || !plan)

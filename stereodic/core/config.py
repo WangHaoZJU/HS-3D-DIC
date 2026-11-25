@@ -127,6 +127,7 @@ class CalibrationConfig(_Strict):
     min_corners: int = Field(8, ge=4)
     roi_origin: list[int] = Field(default_factory=lambda: [0, 0])  # if calibration images are crops
     sensor_size: list[int] | None = None  # full-frame [width, height]; default = calibration image size
+    exclude_views: list[int] = Field(default_factory=list)  # view indices left out of the calibration (both cameras)
 
 
 class FramesConfig(_Strict):
@@ -241,7 +242,7 @@ def load_experiment(
 
 # Fields added after results already existed: left out of hashes while at their default,
 # so adding them does not invalidate earlier results.
-_HASH_OMIT_DEFAULTS = {"frame_offset": 0}
+_HASH_OMIT_DEFAULTS: dict[str, Any] = {"frame_offset": 0, "exclude_views": []}
 
 
 def _strip_new_defaults(data: Any) -> Any:

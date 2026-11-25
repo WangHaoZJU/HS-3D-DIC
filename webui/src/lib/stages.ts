@@ -48,7 +48,6 @@ export const SECTIONS: {
     key: 'calibration',
     label: '标定',
     icon: Camera,
-    milestone: 'U2',
     description: 'ChArUco 检测、立体标定、逐视图残差与剔除',
   },
   {
@@ -97,7 +96,16 @@ export const SECTIONS: {
 
 /** Stages that the worker can run today, for the run menu. */
 export const RUNNABLE: { key: string; label: string; hint: string }[] = [
-  { key: 'calibrate', label: '标定', hint: '检测 ChArUco 角点并做立体标定' },
+  {
+    key: 'calibrate_detect',
+    label: '检测标定板角点',
+    hint: '只检测，结果缓存供标定复用',
+  },
+  {
+    key: 'calibrate',
+    label: '标定',
+    hint: '用缓存的角点做立体标定（需要时先检测）',
+  },
   {
     key: 'stereo',
     label: '参考帧立体匹配',
@@ -157,6 +165,7 @@ export const JOB_STATE: Record<JobState, { label: string; className: string }> =
 
 export const STAGE_LABEL: Record<string, string> = {
   calibrate: '标定',
+  calibrate_detect: '角点检测',
   stereo: '立体匹配',
   temporal: '时序 DIC',
   reconstruct: '重建',

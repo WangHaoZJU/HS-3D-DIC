@@ -644,6 +644,13 @@ ssh -N -L 8000:127.0.0.1:8000 <linux-host>
 - `webui`：数据导入页（左右序列编辑与探测、写入配置、帧偏移、联动缩放平移的双图查看器与播放、逐帧检查卡片、清晰度曲线与参考帧设置、同步卡片）；规划计算器（录制时长与 Δf、混叠判定、曝光上限、噪声底与可测最小振幅）。
 - 测试：`tests/unit/test_import_checks.py`、`tests/integration/test_frame_offset.py`（偏移导出与对齐导出结果一致）、`tests/server/test_api.py::test_import_endpoints`。
 
+### 11.3 U2 完成情况（2026-11-24）
+
+- `stereodic`：角点检测与标定拆分（B5）。`run_calibration_detect` 把每个视图左右的角点存到 `<calibration>_detections.h5`，按标定板参数和图像文件指纹缓存；`run_calibration` 复用缓存，按 `calibration.exclude_views` 剔除视图；标定文件新增 `details/`（每对视图的角点 ID、检测点、残差、标定板位姿、单目使用标记）。
+- `stereodic_server`：`/experiments/{eid}/calibration`（状态、检测、报告、逐视图 RMS、全部残差）、`/views/{i}`、`/views/{i}/{cam}.png`、`/board.png`、`/poses`；任务新增 `calibrate_detect`。
+- `webui`：标定页（状态与操作、结果与内参、视图表勾选剔除并重新标定、逐视图角点与放大残差叠加、逐视图 RMS 柱状图、残差散点、相机与标定板三维位姿、标定板参数与实时渲染预览）。
+- 测试：`tests/integration/test_calibration_stage.py`、`tests/server/test_api.py::test_calibration_endpoints`。
+
 ## 12. 风险与待确认事项
 
 | 事项 | 影响 | 对策 / 需要确认 |

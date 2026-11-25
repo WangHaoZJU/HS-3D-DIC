@@ -21,12 +21,104 @@ STAGES = ("calibrate", "stereo", "temporal", "reconstruct", "rbm", "analyze", "u
 
 
 # ------------------------------------------------------------------- calibration
-def run_calibration(cfg: ExperimentConfig, plot: bool = True, progress: ProgressReporter | None = None):
-    """Detect ChArUco corners in the calibration images, calibrate, write `calibration_file`."""
-    from .calibration.calibrate import CalibrationOptions, calibrate_stereo
-    from .calibration.detect import CharucoBoardSpec, detect_charuco
-    from .calibration.report import plot_residuals, save_calibration
+def _calibration_inputs(cfg: ExperimentConfig):
+    """Calibration sequences, per-side sensor origins and full-sensor sizes."""
     from .io.sequence import open_sequence
+
+    cc = cfg.calibration
+    if cc is None:
+        raise ValueError("experiment config has no `calibration` section")
+    seq_l = open_sequence(cfg.data_path(cc.left.path), cc.left.pattern, cc.left.frame_offset)
+    seq_r = open_sequence(cfg.data_path(cc.right.path), cc.right.pattern, cc.right.frame_offset)
+    if len(seq_l) != len(seq_r):
+        raise ValueError(f"calibration views: {len(seq_l)} left vs {len(seq_r)} right images")
+    origins = []
+    for src in (cc.left, cc.right):
+        origins.append(np.asarray(src.sensor_origin if src.sensor_origin != [0, 0] else cc.roi_origin, dtype=np.float64))
+    sizes = []
+    for seq, origin in ((seq_l, origins[0]), (seq_r, origins[1])):
+        h, w = seq.frame_shape
+        sizes.append(tuple(cc.sensor_size) if cc.sensor_size else (w + int(origin[0]), h + int(origin[1])))
+    return seq_l, seq_r, origins, sizes
+
+
+def _detection_hash(cfg: ExperimentConfig, seq_l, seq_r) -> str:
+    """Board, detection settings and the calibration image files (names, sizes, mtimes)."""
+    cc = cfg.calibration
+
+    def files(seq):
+        out = []
+        for p in getattr(getattr(seq, "base", seq), "files", []):
+            st = p.stat()
+            out.append([p.name, st.st_size, st.st_mtime_ns])
+        return out
+
+    return config_hash(
+        {
+            "board": cc.board.model_dump(mode="json"),
+            "min_corners": cc.min_corners,
+            "origins": [cc.left.sensor_origin, cc.right.sensor_origin, cc.roi_origin],
+            "offsets": [cc.left.frame_offset, cc.right.frame_offset],
+            "files": [files(seq_l), files(seq_r)],
+        }
+    )
+
+
+def run_calibration_detect(cfg: ExperimentConfig, force: bool = False, progress: ProgressReporter | None = None) -> Path:
+    """Detect ChArUco corners in every calibration view and store them next to `calibration_file`.
+
+    Detections are reused by `run_calibration` while the board, the detection settings and
+    the image files are unchanged, so excluding views and recalibrating is quick.
+    """
+    from .calibration.detect import CharucoBoardSpec, detect_charuco
+    from .calibration.report import detections_path, load_detections, save_detections
+
+    progress = ensure_progress(progress)
+    if cfg.calibration_file is None:
+        raise ValueError("experiment config has no `calibration_file`")
+    cc = cfg.calibration
+    seq_l, seq_r, origins, sizes = _calibration_inputs(cfg)
+    out = detections_path(cfg.data_path(cfg.calibration_file))
+    h = _detection_hash(cfg, seq_l, seq_r)
+    if out.exists() and not force:
+        try:
+            if load_detections(out)[3].get("hash") == h:
+                log.info("detections up to date: %s", out)
+                return out
+        except (OSError, KeyError, ValueError):
+            pass
+    spec = CharucoBoardSpec(**cc.board.model_dump())
+    dets: dict[str, list] = {"left": [], "right": []}
+    names = []
+    n = len(seq_l)
+    progress.phase("detecting")
+    for i in range(n):
+        progress.check_cancel()
+        names.append((seq_l.frame_name(i), seq_r.frame_name(i)))
+        for side, seq, origin in (("left", seq_l, origins[0]), ("right", seq_r, origins[1])):
+            d = detect_charuco(seq.read(i), spec, min_corners=cc.min_corners)
+            if d is not None:
+                d.image_points = d.image_points + origin
+            dets[side].append(d)
+            log.info("%s %s: %s corners", side, seq.frame_name(i), 0 if d is None else len(d))
+        progress.update(i + 1, n, f"view {seq_l.frame_name(i)}")
+    meta = {
+        "hash": h,
+        "n_corners_board": spec.n_corners,
+        "origins": [o.tolist() for o in origins],
+        "sensor_sizes": [list(s) for s in sizes],
+        "image_shapes": [list(seq_l.frame_shape), list(seq_r.frame_shape)],
+    }
+    return save_detections(out, dets["left"], dets["right"], names, meta)
+
+
+def run_calibration(cfg: ExperimentConfig, plot: bool = True, progress: ProgressReporter | None = None):
+    """Calibrate from the (cached) ChArUco detections and write `calibration_file`.
+
+    Views listed in `calibration.exclude_views` are left out for both cameras.
+    """
+    from .calibration.calibrate import CalibrationOptions, calibrate_stereo
+    from .calibration.report import load_detections, plot_residuals, save_calibration
 
     progress = ensure_progress(progress)
     cc = cfg.calibration
@@ -34,36 +126,11 @@ def run_calibration(cfg: ExperimentConfig, plot: bool = True, progress: Progress
         raise ValueError("experiment config has no `calibration` section")
     if cfg.calibration_file is None:
         raise ValueError("experiment config has no `calibration_file`")
-    spec = CharucoBoardSpec(**cc.board.model_dump())
-    seq_l = open_sequence(cfg.data_path(cc.left.path), cc.left.pattern)
-    seq_r = open_sequence(cfg.data_path(cc.right.path), cc.right.pattern)
-    if len(seq_l) != len(seq_r):
-        raise ValueError(f"calibration views: {len(seq_l)} left vs {len(seq_r)} right images")
-    origin_l = np.asarray(
-        cc.left.sensor_origin if cc.left.sensor_origin != [0, 0] else cc.roi_origin, dtype=np.float64
-    )
-    origin_r = np.asarray(
-        cc.right.sensor_origin if cc.right.sensor_origin != [0, 0] else cc.roi_origin, dtype=np.float64
-    )
-    hl, wl = seq_l.frame_shape
-    hr, wr = seq_r.frame_shape
-    sensor_l = tuple(cc.sensor_size) if cc.sensor_size else (wl + int(origin_l[0]), hl + int(origin_l[1]))
-    sensor_r = tuple(cc.sensor_size) if cc.sensor_size else (wr + int(origin_r[0]), hr + int(origin_r[1]))
-
-    dets = {"left": [], "right": []}
-    names = []
-    progress.phase("detecting")
-    for i in range(len(seq_l)):
-        progress.check_cancel()
-        progress.update(i, len(seq_l), f"view {seq_l.frame_name(i)}")
-        names.append((seq_l.frame_name(i), seq_r.frame_name(i)))
-        for side, seq, origin in (("left", seq_l, origin_l), ("right", seq_r, origin_r)):
-            d = detect_charuco(seq.read(i), spec, min_corners=cc.min_corners)
-            if d is not None:
-                d.image_points = d.image_points + origin
-            dets[side].append(d)
-            log.info("%s %s: %s corners", side, seq.frame_name(i), 0 if d is None else len(d))
-    progress.update(len(seq_l), len(seq_l))
+    det_file = run_calibration_detect(cfg, progress=progress)
+    det_l, det_r, names, meta = load_detections(det_file)
+    excluded = sorted({int(i) for i in cc.exclude_views if 0 <= int(i) < len(det_l)})
+    for i in excluded:
+        det_l[i] = det_r[i] = None
     progress.check_cancel()
     progress.phase("calibrating")
     opts = CalibrationOptions(
@@ -73,18 +140,22 @@ def run_calibration(cfg: ExperimentConfig, plot: bool = True, progress: Progress
         min_views=cc.min_views,
         min_common_corners=cc.min_corners,
     )
-    result = calibrate_stereo(dets["left"], dets["right"], sensor_l, sensor_r, opts)
+    sensor_l, sensor_r = (tuple(s) for s in meta["sensor_sizes"])
+    result = calibrate_stereo(det_l, det_r, sensor_l, sensor_r, opts)
     progress.phase("writing")
     out = cfg.data_path(cfg.calibration_file)
+    origin_l = meta["origins"][0]
     save_calibration(
         out,
         result,
         roi_origin=(int(origin_l[0]), int(origin_l[1])),
         extra={
             "views": [list(n) for n in names],
+            "excluded_views": excluded,
             "board": cc.board.model_dump(),
             "options": cc.model_dump(mode="json"),
             "config_hash": config_hash(cc),
+            "detections_hash": meta["hash"],
         },
     )
     if plot:

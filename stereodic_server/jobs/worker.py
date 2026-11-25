@@ -20,7 +20,7 @@ from typing import Any
 from stereodic.core.progress import JobCancelled
 
 # Stages the worker can run. analyze / uncertainty / noise_floor follow in U5 (docs §9 B2/B3).
-RUNNABLE = ("calibrate", "stereo", "temporal", "reconstruct", "rbm", "pipeline", "noop")
+RUNNABLE = ("calibrate_detect", "calibrate", "stereo", "temporal", "reconstruct", "rbm", "pipeline", "noop")
 PIPELINE_DEFAULT = ("stereo", "temporal", "reconstruct", "rbm")
 
 
@@ -123,7 +123,9 @@ def run_stage(stage: str, cfg, force: bool, params: dict[str, Any], progress: Qu
 
     progress.set_stage(stage)
     log.info("stage %s started", stage)
-    if stage == "calibrate":
+    if stage == "calibrate_detect":
+        pipeline.run_calibration_detect(cfg, force=force, progress=progress)
+    elif stage == "calibrate":
         pipeline.run_calibration(cfg, plot=True, progress=progress)
     elif stage == "stereo":
         pipeline.run_stereo(cfg, force=force, progress=progress)

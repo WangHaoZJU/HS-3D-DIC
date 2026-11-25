@@ -252,6 +252,96 @@ export type Sharpness = {
   right: number[]
 }
 
+export type CalibrationReportCamera = {
+  K: number[][]
+  dist: number[]
+  image_size: [number, number]
+  mono_rms_px: number
+  views_used: number
+  views_total: number
+  view_rms_px: (number | null)[]
+  std_fx_fy_cx_cy?: number[]
+}
+
+export type CalibrationReport = {
+  stereo_rms_px: number
+  left: CalibrationReportCamera
+  right: CalibrationReportCamera
+  baseline_mm: number
+  optical_axis_angle_deg: number
+  pairs: number[]
+  residual_left_rms_px: number | null
+  residual_right_rms_px: number | null
+  residual_left_max_px: number | null
+  residual_right_max_px: number | null
+  n_corners: number
+  excluded_views?: number[]
+  views?: [string, string][]
+}
+
+export type CalibrationView = {
+  index: number
+  name_left: string
+  name_right: string
+  n_left: number
+  n_right: number
+  n_common: number
+  excluded: boolean
+}
+
+export type CalibrationOverview = {
+  busy: boolean
+  board: Record<string, unknown>
+  board_size_mm: [number, number]
+  n_corners_board: number
+  exclude_views: number[]
+  status: StageRecord
+  images: { left: number; right: number; shape: [number, number] } | null
+  images_error?: string
+  detections: {
+    up_to_date: boolean
+    origins: [number, number][]
+    image_shapes: [number, number][]
+    views: CalibrationView[]
+  } | null
+  report: CalibrationReport | null
+  pairs: {
+    view: number
+    rms_left: number
+    rms_right: number
+    n: number
+    distance_mm: number
+  }[]
+  residuals?: { left: [number, number][]; right: [number, number][] }
+}
+
+export type CalibrationViewDetail = {
+  index: number
+  names: [string, string]
+  left: { ids: number[]; points: [number, number][] } | null
+  right: { ids: number[]; points: [number, number][] } | null
+  pair: {
+    ids: number[]
+    rms_left: number
+    rms_right: number
+    left: { points: [number, number][]; residuals: [number, number][] }
+    right: { points: [number, number][]; residuals: [number, number][] }
+  } | null
+}
+
+export type CalibrationPoses = {
+  cameras: {
+    name: string
+    center: number[]
+    R: number[][]
+    K: number[][]
+    image_size: [number, number]
+  }[]
+  boards: { view: number; corners: number[][]; rms: number }[]
+  board_size_mm: [number, number]
+  baseline_mm: number
+}
+
 // ------------------------------------------------------------------ calls
 const get = <T>(url: string, params?: object) =>
   http.get<T>(url, { params }).then((r) => r.data)
@@ -346,6 +436,31 @@ export const api = {
     ),
   sync: (name: string) =>
     get<SyncResult>(`/experiments/${encodeURIComponent(name)}/sync`),
+  calibration: (name: string) =>
+    get<CalibrationOverview>(
+      `/experiments/${encodeURIComponent(name)}/calibration`
+    ),
+  calibrationView: (name: string, i: number) =>
+    get<CalibrationViewDetail>(
+      `/experiments/${encodeURIComponent(name)}/calibration/views/${i}`
+    ),
+  calibrationImageUrl: (
+    name: string,
+    i: number,
+    cam: 'left' | 'right',
+    scale = 1
+  ) =>
+    `/api/experiments/${encodeURIComponent(name)}/calibration/views/${i}/${cam}.png?scale=${scale}`,
+  boardUrl: (name: string, board: Record<string, unknown>) => {
+    const q = new URLSearchParams()
+    for (const [k, v] of Object.entries(board))
+      if (v !== undefined && v !== null && v !== '') q.set(k, String(v))
+    return `/api/experiments/${encodeURIComponent(name)}/calibration/board.png?${q}`
+  },
+  calibrationPoses: (name: string) =>
+    get<CalibrationPoses>(
+      `/experiments/${encodeURIComponent(name)}/calibration/poses`
+    ),
   sharpness: (name: string, points = 120) =>
     get<Sharpness>(`/experiments/${encodeURIComponent(name)}/sharpness`, {
       points,
@@ -363,6 +478,7 @@ export const qk = {
   sequences: (name: string) => ['sequences', name] as const,
   sync: (name: string) => ['sync', name] as const,
   sharpness: (name: string) => ['sharpness', name] as const,
+  calibration: (name: string) => ['calibration', name] as const,
   frameReport: (name: string, cam: string, k: number) =>
     ['frame-report', name, cam, k] as const,
 }

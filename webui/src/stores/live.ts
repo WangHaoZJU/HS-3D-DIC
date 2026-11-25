@@ -106,6 +106,10 @@ export function useLiveEvents() {
             queryClient.invalidateQueries({
               queryKey: qk.status(job.experiment),
             })
+            if (['succeeded', 'failed', 'cancelled'].includes(job.state))
+              queryClient.invalidateQueries({
+                queryKey: qk.calibration(job.experiment),
+              })
           }
         }
       }

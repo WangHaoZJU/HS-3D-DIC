@@ -163,3 +163,35 @@ def test_import_endpoints(client: TestClient):
 
     sharp = client.get("/api/experiments/imp/sharpness", params={"points": 4}).json()
     assert len(sharp["frames"]) == 4 and len(sharp["left"]) == 4 and all(v > 0 for v in sharp["right"])
+
+
+def test_calibration_endpoints(client: TestClient):
+    import cv2
+    import numpy as np
+
+    settings = client.app.state.settings
+    spec = DemoSpec(name="cal", n_frames=1, n_calib_views=8, oversample=1)
+    make_demo_dataset(settings.data_root, spec, workspace=settings.workspace / "cal", workers=1)
+    ov = client.get("/api/experiments/cal/calibration").json()
+    assert ov["detections"] is None and ov["images"]["left"] == 8 and ov["status"]["state"] == "missing"
+    board = client.get("/api/experiments/cal/calibration/board.png", params={"squares_x": 11})
+    img = cv2.imdecode(np.frombuffer(board.content, np.uint8), cv2.IMREAD_UNCHANGED)
+    assert img.shape[1] > img.shape[0]
+    assert client.get("/api/experiments/cal/calibration/board.png", params={"marker_mm": 9}).status_code == 422
+
+    job = client.post("/api/experiments/cal/jobs", json={"stage": "calibrate"}).json()
+    done = _wait(client, job["id"], timeout=300)
+    assert done["state"] == "succeeded", client.get(f"/api/jobs/{job['id']}/log").json()["text"][-1500:]
+    ov = client.get("/api/experiments/cal/calibration").json()
+    assert ov["status"]["state"] == "done" and ov["detections"]["up_to_date"]
+    assert len(ov["detections"]["views"]) == 8 and ov["report"]["stereo_rms_px"] < 0.1
+    assert len(ov["pairs"]) >= 6 and len(ov["residuals"]["left"]) == sum(p["n"] for p in ov["pairs"])
+    v = ov["pairs"][0]["view"]
+    view = client.get(f"/api/experiments/cal/calibration/views/{v}").json()
+    assert view["pair"] and len(view["pair"]["left"]["points"]) == len(view["pair"]["ids"])
+    assert len(view["left"]["points"]) >= len(view["pair"]["ids"])
+    png = client.get(f"/api/experiments/cal/calibration/views/{v}/right.png", params={"scale": 0.5})
+    assert cv2.imdecode(np.frombuffer(png.content, np.uint8), cv2.IMREAD_UNCHANGED).shape == (208, 256)
+    poses = client.get("/api/experiments/cal/calibration/poses").json()
+    assert len(poses["boards"]) == len(ov["pairs"]) and abs(poses["baseline_mm"] - ov["report"]["baseline_mm"]) < 1e-9
+    assert poses["cameras"][1]["center"][0] > 50  # right camera sits at +x

@@ -77,6 +77,10 @@ class StereoResult:
     view_rms_right: np.ndarray
     residuals_left: list[np.ndarray]  # (K, 2) per pair, pixels
     residuals_right: list[np.ndarray]
+    pair_ids: list[np.ndarray] = field(default_factory=list)  # (K,) corner ids per pair (common to both cameras)
+    pair_points_left: list[np.ndarray] = field(default_factory=list)  # (K, 2) measured corners per pair
+    pair_points_right: list[np.ndarray] = field(default_factory=list)
+    poses: list[tuple[np.ndarray, np.ndarray]] = field(default_factory=list)  # board pose per pair (left frame)
 
     def report(self) -> dict:
         cal = self.calibration
@@ -178,7 +182,7 @@ def calibrate_stereo(
     ml = calibrate_mono(left, image_size_left, options)
     mr = calibrate_mono(right, image_size_right, options)
 
-    pairs, obj, img_l, img_r = [], [], [], []
+    pairs, obj, img_l, img_r, pair_ids, pts_l, pts_r = [], [], [], [], [], [], []
     for i in range(len(left)):
         if not (ml.used[i] and mr.used[i]):
             continue
@@ -186,6 +190,9 @@ def calibrate_stereo(
         if len(cl) < options.min_common_corners:
             continue
         pairs.append(i)
+        pair_ids.append(cl.ids.copy())
+        pts_l.append(cl.image_points.copy())
+        pts_r.append(cr.image_points.copy())
         obj.append(cl.object_points.astype(np.float32))
         img_l.append(cl.image_points.astype(np.float32).reshape(-1, 1, 2))
         img_r.append(cr.image_points.astype(np.float32).reshape(-1, 1, 2))
@@ -209,10 +216,11 @@ def calibrate_stereo(
 
     # residuals with the final model: board pose per pair from the left camera (solvePnP),
     # right camera through the stereo extrinsics
-    vr_l, vr_r, res_l, res_r = [], [], [], []
+    vr_l, vr_r, res_l, res_r, poses = [], [], [], [], []
     for o, il, ir in zip(obj, img_l, img_r):
         ok, rvec, tvec = cv2.solvePnP(o, il, K1, D1, flags=cv2.SOLVEPNP_ITERATIVE)
         rvec, tvec = _refine_pose_stereo(calib, o.astype(np.float64), il.reshape(-1, 2), ir.reshape(-1, 2), rvec, tvec)
+        poses.append((np.asarray(rvec, dtype=np.float64).ravel(), np.asarray(tvec, dtype=np.float64).ravel()))
         Rb, _ = cv2.Rodrigues(rvec)
         Xl = o.astype(np.float64) @ Rb.T + tvec.ravel()
         rl = project(cam_l, Xl) - il.reshape(-1, 2)
@@ -224,6 +232,10 @@ def calibrate_stereo(
     return StereoResult(
         calibration=calib, rms=float(rms), left=ml, right=mr, pairs=np.asarray(pairs),
         view_rms_left=np.asarray(vr_l), view_rms_right=np.asarray(vr_r), residuals_left=res_l, residuals_right=res_r,
+        pair_ids=pair_ids,
+        pair_points_left=pts_l,
+        pair_points_right=pts_r,
+        poses=poses,
     )
 
 
