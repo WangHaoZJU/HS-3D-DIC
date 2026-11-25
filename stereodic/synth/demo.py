@@ -13,7 +13,9 @@ command-line pipeline can be exercised end to end without cameras or a GPU::
         experiment.yaml               ready-to-run experiment (absolute paths)
 
 Motion: torsion about the target span axis at ``f_torsion`` plus a rigid out-of-plane
-translation at ``f_bending``, both harmonic, so the spectrum has two known peaks.
+translation at ``f_bending``, both harmonic, so the spectrum has two known peaks. Either
+mode is switched off with a zero amplitude. With ``exposure_us`` > 0 each frame is the
+average of ``blur_samples`` instants spread over the exposure (motion blur, docs §3.2).
 """
 
 from __future__ import annotations
@@ -47,6 +49,8 @@ class DemoSpec:
     oversample: int = 2
     poi_step: int = 12
     seed: int = 7
+    exposure_us: float = 0.0  # 0: instantaneous frames; otherwise motion blur over this exposure
+    blur_samples: int = 5
 
 
 def _scene(spec: DemoSpec):
@@ -77,16 +81,24 @@ def _target_at(spec: DemoSpec, scene, t: float):
 def _render_frame(args: tuple[DemoSpec, int, str, str]) -> int:
     import tifffile
 
-    from .render import SensorModel
+    from .render import SensorModel, apply_sensor
+    from .stereo import render_view
 
     spec, k, left_dir, right_dir = args
     scene = _scene(spec)
-    target = _target_at(spec, scene, k / spec.frame_rate_hz)
-    left, right = scene.render(
-        target=target, sensor=SensorModel(noise_std=spec.noise_std), oversample=spec.oversample, seed=spec.seed * 1000 + k
-    )
-    tifffile.imwrite(Path(left_dir) / f"img{k:05d}.tif", left)
-    tifffile.imwrite(Path(right_dir) / f"img{k:05d}.tif", right)
+    t = k / spec.frame_rate_hz
+    sensor = SensorModel(noise_std=spec.noise_std)
+    rng = np.random.default_rng(spec.seed * 1000 + k)
+    if spec.exposure_us > 0 and spec.blur_samples > 1:
+        e = spec.exposure_us * 1e-6
+        times = t + np.linspace(-0.5 * e, 0.5 * e, spec.blur_samples)
+    else:
+        times = np.array([t])
+    for cam, out_dir in ((scene.left, left_dir), (scene.right, right_dir)):
+        trans = np.mean(
+            [render_view(scene.texture, _target_at(spec, scene, tt), cam, spec.oversample) for tt in times], axis=0
+        )
+        tifffile.imwrite(Path(out_dir) / f"img{k:05d}.tif", apply_sensor(trans, sensor, rng))
     return k
 
 
@@ -125,8 +137,9 @@ def experiment_dict(spec: DemoSpec, data_dir: Path, workspace: Path) -> dict[str
     return {
         "name": spec.name,
         "description": (
-            f"Synthetic demo: curved target, torsion {spec.f_torsion_hz:g} Hz + bending {spec.f_bending_hz:g} Hz, "
-            f"{spec.n_frames} frames at {spec.frame_rate_hz:g} fps"
+            f"Synthetic demo: curved target, torsion {spec.f_torsion_hz:g} Hz ({spec.torsion_deg:g} deg) + "
+            f"out-of-plane {spec.f_bending_hz:g} Hz ({spec.bending_mm * 1e3:g} um), {spec.n_frames} frames at "
+            f"{spec.frame_rate_hz:g} fps" + (f", exposure {spec.exposure_us:g} us" if spec.exposure_us > 0 else "")
         ),
         "cameras": {
             "left": {"path": str(data_dir / "left"), "pattern": "*.tif", "timestamp_path": str(data_dir / "timestamps_left.csv")},

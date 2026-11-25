@@ -32,6 +32,11 @@ def main() -> None:
     ap.add_argument("--width", type=int, default=512)
     ap.add_argument("--height", type=int, default=416)
     ap.add_argument("--workers", type=int, default=None)
+    ap.add_argument("--f-torsion", type=float, default=137.0, help="torsion mode frequency, Hz")
+    ap.add_argument("--torsion-deg", type=float, default=0.5, help="torsion amplitude, deg (0: off)")
+    ap.add_argument("--f-bending", type=float, default=412.0, help="out-of-plane mode frequency, Hz")
+    ap.add_argument("--bending-mm", type=float, default=0.02, help="out-of-plane amplitude, mm (0: off)")
+    ap.add_argument("--exposure-us", type=float, default=0.0, help="exposure time for motion blur, µs (0: none)")
     ap.add_argument("--exact-calibration", action="store_true", help="also write the true calibration")
     args = ap.parse_args()
 
@@ -52,6 +57,11 @@ def main() -> None:
         n_frames=args.frames,
         frame_rate_hz=args.fps,
         n_calib_views=args.views,
+        f_torsion_hz=args.f_torsion,
+        torsion_deg=args.torsion_deg,
+        f_bending_hz=args.f_bending,
+        bending_mm=args.bending_mm,
+        exposure_us=args.exposure_us,
     )
     t0 = time.time()
     out = make_demo_dataset(data_root, spec, workspace, args.workers, args.exact_calibration)
